@@ -170,7 +170,7 @@ else
 
     bool Pendente(string s) => s switch
     {
-        "Cadastro" => string.IsNullOrWhiteSpace(Cliente.Ficha.Responsavel) || string.IsNullOrWhiteSpace(Cliente.Ficha.Site),
+        "Cadastro" => string.IsNullOrWhiteSpace(Cliente.Ficha.Responsavel),
         "ICP" => string.IsNullOrWhiteSpace(Cliente.Icp.CargoDecisor) || Cliente.Icp.DoresPrincipais.Count == 0,
         "Produto" => string.IsNullOrWhiteSpace(Cliente.Produto.NomeCorreto),
         "Estratégia" => string.IsNullOrWhiteSpace(Cliente.Estrategia.PromessaPrincipal),

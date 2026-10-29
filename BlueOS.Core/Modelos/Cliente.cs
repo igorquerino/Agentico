@@ -86,6 +86,8 @@ public sealed class Icp
     public List<string> DoresPrincipais { get; set; } = new();
     public List<string> DesejosPrincipais { get; set; } = new();
     public List<string> CanaisOndeEstao { get; set; } = new();
+    /// <summary>O id do recorte do ICP principal no V1 (cliente_icp_segmento), para o PATCH gravar no mesmo.</summary>
+    public string? SegmentoId { get; set; }
 
     public static readonly string[] Tipos = ["B2B", "B2C", "B2B2C"];
     public static readonly string[] Temperaturas = ["frio", "morno", "quente"];

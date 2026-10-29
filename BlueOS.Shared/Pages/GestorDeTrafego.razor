@@ -124,6 +124,8 @@ else
     protected override async Task OnInitializedAsync()
     {
         Fonte.Mudou += Mudou;
+        try { await Fonte.AutoConectarAsync(); }
+        catch (Exception e) { erro = $"conexão automática ao V1 falhou: {e.Message}"; }
         await Carregar();
         /* Deep link, como o `?agente=lp&cliente=<slug>` do V1: /?cliente=<slug>&etapa=automacao
            abre direto no cliente e na etapa (o sino do OS e o chat podem mandar gente para cá). */

@@ -42,7 +42,6 @@ public static class Estagios
     {
         var p = new List<string>();
         if (string.IsNullOrWhiteSpace(c.Ficha.Responsavel)) p.Add("responsável");
-        if (string.IsNullOrWhiteSpace(c.Ficha.Site)) p.Add("site");
         if (string.IsNullOrWhiteSpace(c.Icp.CargoDecisor)) p.Add("cargo decisor do ICP");
         if (c.Icp.DoresPrincipais.Count == 0) p.Add("dores do ICP");
         if (string.IsNullOrWhiteSpace(c.Produto.NomeCorreto)) p.Add("nome do produto");

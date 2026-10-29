@@ -129,7 +129,11 @@ public sealed class V1Api : IBlueApi, IDisposable
             }
             c.Status = S(x, "status") ?? c.Status;
             c.Conta.AdAccountId = S(x, "adAccountId") ?? c.Conta.AdAccountId;
-            c.Squad = Lista(x, "squads").FirstOrDefault().GetString() ?? c.Squad;
+            /* `squads: []` é comum (cliente sem vínculo): o FirstOrDefault devolve um JsonElement
+               vazio, e `.GetString()` nele lança "Operation is not valid". Só lê se for string. */
+            var primeiroSquad = Lista(x, "squads").FirstOrDefault();
+            if (primeiroSquad.ValueKind == JsonValueKind.String) c.Squad = primeiroSquad.GetString() ?? c.Squad;
+            else if (string.IsNullOrEmpty(c.Squad) || c.Squad == "POSEIDON") c.Squad = "sem squad";
             saida.Add(c);
         }
         return saida;
@@ -139,6 +143,7 @@ public sealed class V1Api : IBlueApi, IDisposable
     {
         if (!_cache.ContainsKey(slug)) await ListarClientesAsync();
         if (!_cache.TryGetValue(slug, out var c)) return null;
+        try { await LerDetalheAsync(c); } catch { /* sem detalhe, a ficha fica como está */ }
         try
         {
             var t = await Get($"api/os/clientes/{c.Id}/trafego");
@@ -196,8 +201,96 @@ public sealed class V1Api : IBlueApi, IDisposable
 
     /* ---- ficha --------------------------------------------------------------- */
 
-    public Task SalvarFichaAsync(Cliente c) =>
-        throw new NotSupportedException("salvar a ficha inteira (cadastro, ICP, produto, estratégia) ainda não está ligado ao V1: hoje isso é feito no card do cliente, em /clientes. O card Tráfego e o critério de MQL já gravam por aqui.");
+    /// <summary>
+    /// Contato: PATCH /informacoes (os campos CONTATO da rota; dinheiro é de coordenador pra cima e fica de fora).
+    /// ICP: PATCH /contexto com o perfil (cliente_icp) e o recorte do ICP principal (cliente_icp_segmento).
+    /// Produto e estratégia não têm rota de escrita no V1 por aqui: ficam só de leitura.
+    /// </summary>
+    public async Task SalvarFichaAsync(Cliente c)
+    {
+        var contato = new Dictionary<string, object?>();
+        void Campo(string nome, string? v) { if (!string.IsNullOrWhiteSpace(v)) contato[nome] = v.Trim(); }
+        Campo("responsavel", c.Ficha.Responsavel);
+        Campo("contato_principal", c.Ficha.ContatoPrincipal);
+        Campo("cnpj", c.Ficha.Cnpj);
+        Campo("razao_social", c.Ficha.RazaoSocial);
+        Campo("whatsapp", c.Ficha.Whatsapp);
+        if (contato.Count > 0) await Envie(HttpMethod.Patch, $"api/os/clientes/{c.Id}/informacoes", contato);
+
+        await Envie(HttpMethod.Patch, $"api/os/clientes/{c.Id}/contexto", new
+        {
+            icp = new
+            {
+                tipo = c.Icp.Tipo, nivel_consciencia = c.Icp.NivelConsciencia, temperatura = c.Icp.Temperatura,
+                tamanho_mercado = c.Icp.TamanhoMercado, persona = c.Icp.Persona, publico_alvo = c.Icp.PublicoAlvo, obs = c.Icp.Obs,
+                dores_principais = c.Icp.DoresPrincipais, desejos_principais = c.Icp.DesejosPrincipais, canais_onde_estao = c.Icp.CanaisOndeEstao,
+            },
+            segmentos = new[]
+            {
+                new
+                {
+                    segmento_id = c.Icp.SegmentoId, setor = c.Icp.Setor, descricao = c.Icp.Segmento, cargo_decisor = c.Icp.CargoDecisor,
+                    faturamento_minimo = c.Icp.FaturamentoMinimo, localizacao = c.Icp.Localizacao,
+                },
+            },
+        });
+        Avisar();
+    }
+
+    /// <summary>A ficha inteira vem de GET /detalhe: cadastro, contrato, ICP, recorte, produto e estratégia.</summary>
+    async Task LerDetalheAsync(Cliente c)
+    {
+        var d = await Get($"api/os/clientes/{c.Id}/detalhe");
+        var cli = d.TryGetProperty("cliente", out var cl) ? cl : default;
+        c.Ficha.Cnpj = S(cli, "cnpj"); c.Ficha.RazaoSocial = S(cli, "razao_social"); c.Ficha.ContatoPrincipal = S(cli, "contato");
+        c.Ficha.Responsavel = S(cli, "responsavel"); c.Ficha.Whatsapp = S(cli, "whatsapp");
+        if (DateOnly.TryParse(S(cli, "desde") ?? S(cli, "criado_em")?[..10], out var desde)) c.Desde = desde;
+        var ct = d.TryGetProperty("contrato", out var cc) ? cc : default;
+        if (ct.ValueKind == JsonValueKind.Object)
+        {
+            c.Ficha.Modalidade = S(ct, "modalidade"); c.Ficha.Mrr = D(ct, "mrr"); c.Ficha.ValorTotal = D(ct, "valor_total");
+            c.Ficha.DataVencimento = DateOnly.TryParse(S(ct, "data_vencimento"), out var dv) ? dv : null;
+        }
+        var ctx = d.TryGetProperty("contexto", out var cx) ? cx : default;
+        var icp = ctx.TryGetProperty("icp", out var ic) ? ic : default;
+        if (icp.ValueKind == JsonValueKind.Object)
+        {
+            c.Icp.Tipo = SN(icp, "tipo") ?? c.Icp.Tipo; c.Icp.NivelConsciencia = SN(icp, "nivel_consciencia") ?? c.Icp.NivelConsciencia;
+            c.Icp.Temperatura = SN(icp, "temperatura") ?? c.Icp.Temperatura; c.Icp.TamanhoMercado = S(icp, "tamanho_mercado");
+            c.Icp.Persona = S(icp, "persona"); c.Icp.PublicoAlvo = S(icp, "publico_alvo"); c.Icp.Obs = S(icp, "obs");
+            c.Icp.DoresPrincipais = Textos(icp, "dores_principais"); c.Icp.DesejosPrincipais = Textos(icp, "desejos_principais"); c.Icp.CanaisOndeEstao = Textos(icp, "canais_onde_estao");
+        }
+        var seg = Lista(ctx, "segmentos").FirstOrDefault();
+        if (seg.ValueKind == JsonValueKind.Object)
+        {
+            c.Icp.SegmentoId = SN(seg, "segmento_id"); c.Icp.Setor = S(seg, "setor"); c.Icp.Segmento = S(seg, "descricao");
+            c.Icp.CargoDecisor = S(seg, "cargo_decisor"); c.Icp.FaturamentoMinimo = S(seg, "faturamento_minimo"); c.Icp.Localizacao = S(seg, "localizacao");
+        }
+        var prod = ctx.TryGetProperty("produto", out var pr) ? pr : default;
+        if (prod.ValueKind == JsonValueKind.Object)
+        {
+            c.Produto.NomeCorreto = S(prod, "nome_correto"); c.Produto.Descricao = S(prod, "descricao"); c.Produto.ModeloNegocio = S(prod, "modelo_negocio");
+            c.Produto.Diferenciais = S(prod, "diferenciais"); c.Produto.FuncionalidadesChave = S(prod, "funcionalidades_chave"); c.Produto.ObjecoesComuns = S(prod, "objecoes_comuns");
+        }
+        var est = ctx.TryGetProperty("estrategia", out var es) ? es : default;
+        if (est.ValueKind == JsonValueKind.Object)
+        {
+            c.Estrategia.PromessaPrincipal = S(est, "promessa_principal"); c.Estrategia.Posicionamento = S(est, "posicionamento");
+            c.Estrategia.Diferencial = S(est, "diferencial"); c.Estrategia.FunilTipo = S(est, "funil_tipo"); c.Estrategia.Gatilhos = S(est, "gatilhos");
+        }
+        var squadAtual = S(d, "squad_atual_id");
+        var nomeSquad = Lista(d, "squads").FirstOrDefault(s => S(s, "squad_id") == squadAtual);
+        if (nomeSquad.ValueKind == JsonValueKind.Object) c.Squad = S(nomeSquad, "squad_nome") ?? c.Squad;
+    }
+
+    static string? SN(JsonElement j, string nome)
+    {
+        if (j.ValueKind != JsonValueKind.Object || !j.TryGetProperty(nome, out var v)) return null;
+        return v.ValueKind switch { JsonValueKind.String => v.GetString(), JsonValueKind.Number => v.GetRawText(), _ => null };
+    }
+
+    static List<string> Textos(JsonElement j, string nome) =>
+        Lista(j, nome).Select(x => x.ValueKind == JsonValueKind.String ? x.GetString() ?? "" : x.GetRawText()).Where(x => x != "").ToList();
 
     public async Task SalvarCardTrafegoAsync(Cliente c, string? nichoSlug, decimal? budgetMensal)
     {

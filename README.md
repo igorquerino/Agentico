@@ -66,8 +66,30 @@ O botão **Fonte de dados** (canto superior direito) troca entre:
   o planejador, a árvore, a régua e o crivo são os reais.
 - **Blue OS V1**: login pelo `/api/os/login` (cookie de sessão) e as rotas `/api/trafego/*`
   e `/api/os/clientes/*` que o V1 já tem. O app nunca guarda chave do banco nem service
-  role. Este cliente tipado **ainda não foi exercitado contra um V1 em execução**: a lista
-  das rotas e dos corpos está no cabeçalho de `BlueOS.Core/Api/V1Api.cs`.
+  role. Exercitado em 29/10/2026 contra o V1 em `localhost:3080` (banco de homologação) com
+  o usuário de QA dos testes e2e do próprio V1: carteira, detalhe do cliente, card Tráfego,
+  critério de MQL, assets, execução, estrutura, ongoing, recomendações, peças do Designer e
+  token do squad respondem e são lidos. A lista das rotas e dos corpos está no cabeçalho de
+  `BlueOS.Core/Api/V1Api.cs`.
+
+  O que fica **só de leitura** no modo V1 por enquanto: produto e estratégia da ficha (sem
+  rota de escrita), o financeiro do contrato (de coordenador pra cima) e a geração de arte
+  (feita no Agente Designer do V1; as peças chegam pela biblioteca).
+
+  **Conexão automática de desenvolvimento:** com `BLUEOS_V1_URL`, `BLUEOS_V1_LOGIN` e
+  `BLUEOS_V1_SENHA` no ambiente do processo, o app abre já ligado ao V1. A senha fica só na
+  memória do processo. Exemplo no PowerShell:
+
+  ```powershell
+  $env:BLUEOS_V1_URL = "http://localhost:3080"; $env:BLUEOS_V1_LOGIN = "seu_usuario"; $env:BLUEOS_V1_SENHA = "sua_senha"
+  .\BlueOS\bin\Debug\net10.0-windows10.0.19041.0\win-x64\BlueOS.exe
+  ```
+
+  Subir o V1 no localhost não toca a produção: o `.env.local` aponta para o banco de
+  homologação, a escrita na Meta é bloqueada fora de produção e toda rota de cron responde
+  404 nesse banco. Exceções conhecidas: salvar o critério de MQL em texto ecoa para o OS
+  antigo em produção (o desktop não envia esse campo), e gerar copy gasta crédito da chave
+  da Anthropic do `.env.local`.
 
 ## O que foi portado do V1 (fiel, com testes)
 

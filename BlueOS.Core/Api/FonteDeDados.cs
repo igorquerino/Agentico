@@ -48,6 +48,24 @@ public sealed class FonteDeDados
         catch { }
     }
 
+    bool _autoTentado;
+
+    /// <summary>
+    /// Conexão automática de DESENVOLVIMENTO: com BLUEOS_V1_URL, BLUEOS_V1_LOGIN e BLUEOS_V1_SENHA
+    /// no ambiente do processo, o app abre já ligado ao V1. A senha fica só na memória do processo,
+    /// nunca em disco. Sem as três variáveis, nada acontece. Tentada uma vez por processo.
+    /// </summary>
+    public async Task<string?> AutoConectarAsync()
+    {
+        if (_autoTentado) return null;
+        _autoTentado = true;
+        var url = Environment.GetEnvironmentVariable("BLUEOS_V1_URL");
+        var login = Environment.GetEnvironmentVariable("BLUEOS_V1_LOGIN");
+        var senha = Environment.GetEnvironmentVariable("BLUEOS_V1_SENHA");
+        if (string.IsNullOrWhiteSpace(url) || string.IsNullOrWhiteSpace(login) || string.IsNullOrWhiteSpace(senha)) return null;
+        return await UsarV1Async(url.Trim(), login.Trim(), senha);
+    }
+
     public void UsarDemo()
     {
         (Atual as IDisposable)?.Dispose();
