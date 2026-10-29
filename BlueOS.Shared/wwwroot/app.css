@@ -75,7 +75,8 @@ input.curto { display: inline-block; width: 240px; margin: 0; padding: 5px 10px;
 .cabecalho-acoes { display: flex; gap: 10px; align-items: center; }
 .busca { width: 260px; margin: 0; }
 .caixa-nova { max-width: 560px; }
-.filtros { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 16px; }
+.filtros { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; align-items: center; }
+.filtro-rotulo { letter-spacing: .08em; text-transform: uppercase; margin-right: 2px; }
 .grade-cartoes { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 14px; }
 .cartao { background: var(--raise); border: 1px solid var(--border); border-radius: var(--raio); padding: 16px; cursor: pointer; transition: border-color .15s, transform .15s; display: flex; flex-direction: column; gap: 10px; }
 .cartao:hover, .cartao:focus { border-color: var(--brand); transform: translateY(-1px); outline: none; }

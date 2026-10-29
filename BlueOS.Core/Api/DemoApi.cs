@@ -141,6 +141,14 @@ public sealed class DemoApi : IBlueApi
         return De(new EstadoDoToken(c.Conta.TokenValido, c.Conta.TokenMotivo));
     }
 
+    public Task<EstadoDoToken> GravarTokenDoSquadAsync(Cliente c, string token)
+    {
+        if (token.Trim().Length < 40) throw new ArgumentException("isso não parece um access token da Meta (curto demais). Cole o token inteiro do System User.");
+        foreach (var x in _clientes.Where(x => x.Squad == c.Squad)) { x.Conta.TokenValido = true; x.Conta.TokenMotivo = null; x.Conta.TokenConferidoEm = DateTime.Now; }
+        Avisar();
+        return De(new EstadoDoToken(true, null));
+    }
+
     /* ---- copy ---------------------------------------------------------------- */
 
     public Task<LoteDeCopy> GerarCopyAsync(Cliente c, IReadOnlyList<GeradorDemo.Pedido> pedido, string? briefing)

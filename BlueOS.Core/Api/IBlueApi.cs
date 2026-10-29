@@ -42,6 +42,9 @@ public interface IBlueApi
     Task<ResultadoDaConta> ConectarContaAsync(Cliente c, string? adAccountId, string? pageId, string? pageNome);
     Task SalvarContaAsync(Cliente c);
     Task<EstadoDoToken> ConferirTokenAsync(Cliente c);
+    /// <summary>Grava o token Meta do SQUAD do cliente na fonte (no V1: POST /api/trafego/token-meta, que
+    /// pergunta à Meta antes de gravar). O app só repassa: nunca guarda o token.</summary>
+    Task<EstadoDoToken> GravarTokenDoSquadAsync(Cliente c, string token);
 
     /* ---- copy -------------------------------------------------------------- */
     Task<LoteDeCopy> GerarCopyAsync(Cliente c, IReadOnlyList<GeradorDemo.Pedido> pedido, string? briefing);

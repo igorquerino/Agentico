@@ -30,11 +30,20 @@
         </div>
     }
 
+    <div class="filtros" role="tablist" aria-label="Filtrar por squad" style="@(SquadsDaCarteira.Count > 1 ? null : "display:none")">
+        <span class="text-3 mini filtro-rotulo">squad</span>
+        <button type="button" class="chip @(squadFiltro is null ? "ativo" : "")" @onclick="() => EscolherSquad(null)">todos <b>@clientes.Count</b></button>
+        @foreach (var s in SquadsDaCarteira)
+        {
+            var n = clientes.Count(c => c.EstaNoSquad(s));
+            <button type="button" class="chip @(squadFiltro == s ? "ativo" : "")" @onclick="() => EscolherSquad(s)">@s <b>@n</b></button>
+        }
+    </div>
     <div class="filtros" role="tablist" aria-label="Filtrar por estágio">
-        <button type="button" class="chip @(filtro is null ? "ativo" : "")" @onclick="() => filtro = null">todos <b>@clientes.Count</b></button>
+        <button type="button" class="chip @(filtro is null ? "ativo" : "")" @onclick="() => filtro = null">todos <b>@DoSquad.Count</b></button>
         @foreach (var d in Estagios.Lista)
         {
-            var n = clientes.Count(c => EstagioDe(c) == d.Estagio);
+            var n = DoSquad.Count(c => EstagioDe(c) == d.Estagio);
             <button type="button" class="chip @(filtro == d.Estagio ? "ativo" : "")" @onclick="() => filtro = d.Estagio">@d.Curto <b>@n</b></button>
         }
     </div>
@@ -121,7 +130,18 @@ else
     string squadNovo = "POSEIDON";
     IBlueApi? apiVista;
 
-    List<Cliente> Filtrados => clientes
+    string? squadFiltro;
+
+    List<string> SquadsDaCarteira => clientes
+        .SelectMany(c => c.Squads.Count > 0 ? c.Squads : [c.Squad])
+        .Select(s => s.ToUpperInvariant()).Distinct().OrderBy(s => s).ToList();
+
+    /// <summary>A carteira do squad escolhido. No piloto, POSEIDON: o único que o token da Meta alcança.</summary>
+    List<Cliente> DoSquad => squadFiltro is null ? clientes : clientes.Where(c => c.EstaNoSquad(squadFiltro)).ToList();
+
+    void EscolherSquad(string? s) { squadFiltro = s; Fonte.GravarSquadPadrao(s); }
+
+    List<Cliente> Filtrados => DoSquad
         .Where(c => filtro is null || EstagioDe(c) == filtro)
         .Where(c => string.IsNullOrWhiteSpace(busca) || c.Nome.Contains(busca, StringComparison.OrdinalIgnoreCase) || c.Slug.Contains(busca, StringComparison.OrdinalIgnoreCase))
         .OrderBy(c => (int)EstagioDe(c)).ThenBy(c => c.Nome)
@@ -152,6 +172,9 @@ else
         try { clientes = (await Api.ListarClientesAsync()).ToList(); apiVista = Api; }
         catch (Exception e) { erro = e.Message; clientes = new(); }
         finally { carregando = false; }
+        /* O squad padrão da configuração só vale quando existe na carteira lida; senão, todos. */
+        var padrao = Fonte.Config.SquadPadrao;
+        squadFiltro = padrao is not null && clientes.Any(c => c.EstaNoSquad(padrao)) ? padrao : null;
     }
 
     void Mudou() => InvokeAsync(async () =>

@@ -141,9 +141,8 @@ public sealed class V1Api : IBlueApi, IDisposable
             c.Conta.AdAccountId = S(x, "adAccountId") ?? c.Conta.AdAccountId;
             /* `squads: []` é comum (cliente sem vínculo): o FirstOrDefault devolve um JsonElement
                vazio, e `.GetString()` nele lança "Operation is not valid". Só lê se for string. */
-            var primeiroSquad = Lista(x, "squads").FirstOrDefault();
-            if (primeiroSquad.ValueKind == JsonValueKind.String) c.Squad = primeiroSquad.GetString() ?? c.Squad;
-            else if (string.IsNullOrEmpty(c.Squad) || c.Squad == "POSEIDON") c.Squad = "sem squad";
+            c.Squads = Lista(x, "squads").Where(s => s.ValueKind == JsonValueKind.String).Select(s => s.GetString()!.Trim().ToUpperInvariant()).ToList();
+            c.Squad = c.Squads.FirstOrDefault() ?? "sem squad";
             saida.Add(c);
         }
         return saida;
@@ -380,6 +379,16 @@ public sealed class V1Api : IBlueApi, IDisposable
             return new(c.Conta.TokenValido, c.Conta.TokenMotivo);
         }
         return new(null, $"o squad {c.Squad} não está no seu escopo do token Meta.");
+    }
+
+    public async Task<EstadoDoToken> GravarTokenDoSquadAsync(Cliente c, string token)
+    {
+        var j = await Get("api/trafego/token-meta");
+        var squad = Lista(j, "squads").FirstOrDefault(s => string.Equals(S(s, "nome")?.Trim(), c.Squad, StringComparison.OrdinalIgnoreCase));
+        if (squad.ValueKind != JsonValueKind.Object) throw new InvalidOperationException($"o squad {c.Squad} não está no seu escopo do token Meta.");
+        /* A rota confere com a Meta (/me) antes de gravar e registra a troca mascarada na trilha. */
+        await Envie(HttpMethod.Post, "api/trafego/token-meta", new { squad_v0_id = S(squad, "v0_id"), access_token = token.Trim() });
+        return await ConferirTokenAsync(c);
     }
 
     /* ---- copy ---------------------------------------------------------------- */

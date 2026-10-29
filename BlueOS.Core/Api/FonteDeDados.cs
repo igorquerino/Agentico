@@ -8,6 +8,8 @@ public sealed class ConfiguracaoDaFonte
     public string Modo { get; set; } = "demo";
     public string BaseUrlV1 { get; set; } = "http://localhost:3080";
     public string? UltimoLogin { get; set; }
+    /// <summary>O squad que a carteira mostra ao abrir. "POSEIDON" no piloto: é o único que o token da Meta alcança (Igor, 29/10/2026).</summary>
+    public string? SquadPadrao { get; set; } = "POSEIDON";
 }
 
 /// <summary>
@@ -64,6 +66,12 @@ public sealed class FonteDeDados
         var senha = Environment.GetEnvironmentVariable("BLUEOS_V1_SENHA");
         if (string.IsNullOrWhiteSpace(url) || string.IsNullOrWhiteSpace(login) || string.IsNullOrWhiteSpace(senha)) return null;
         return await UsarV1Async(url.Trim(), login.Trim(), senha);
+    }
+
+    public void GravarSquadPadrao(string? squad)
+    {
+        Config.SquadPadrao = string.IsNullOrWhiteSpace(squad) ? null : squad.Trim().ToUpperInvariant();
+        Gravar();
     }
 
     public void UsarDemo()

@@ -16,7 +16,11 @@ public sealed class Cliente
     /// <summary>ativo | onboarding | pausado | aviso_previo | churn (cliente_status_atual).</summary>
     public string Status { get; set; } = "onboarding";
     public string Squad { get; set; } = "POSEIDON";
+    /// <summary>Todos os squads que atendem o cliente (um cliente pode estar em mais de um). O filtro da carteira lê daqui.</summary>
+    public List<string> Squads { get; set; } = new();
     public DateOnly Desde { get; set; }
+    public bool EstaNoSquad(string squad) =>
+        string.Equals(Squad, squad, StringComparison.OrdinalIgnoreCase) || Squads.Any(s => string.Equals(s, squad, StringComparison.OrdinalIgnoreCase));
 
     public FichaCadastral Ficha { get; set; } = new();
     public Icp Icp { get; set; } = new();

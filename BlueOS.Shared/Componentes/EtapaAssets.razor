@@ -49,6 +49,13 @@
                 @(Cliente.Conta.TokenValido == true ? "a Meta aceitou o token" : Cliente.Conta.TokenValido == false ? "a Meta recusou: " + Cliente.Conta.TokenMotivo : "não conferido")
             </span>
         </div>
+        <label>Trocar o token do squad (cole o access token inteiro)
+            <input type="password" @bind="tokenNovo" placeholder="EAA…" autocomplete="off" />
+        </label>
+        <div class="acoes">
+            <button type="button" class="btn btn-ghost" @onclick="GravarToken" disabled="@(ocupado || string.IsNullOrWhiteSpace(tokenNovo))">Gravar token no squad @Cliente.Squad</button>
+            <span class="text-3 mini">vale para todos os clientes do squad; a fonte confere com a Meta antes de gravar; o app não guarda o token</span>
+        </div>
 
         <h3 class="mt">O que o Start precisa saber</h3>
         <label class="opcao"><input type="checkbox" @bind="Cliente.Conta.TemLista" /> o cliente subiu lista de clientes ou leads (público personalizado do BOFU)</label>
@@ -75,8 +82,21 @@
     [Parameter] public required IBlueApi Api { get; set; }
     [Parameter] public EventCallback Avancar { get; set; }
 
-    string adAccount = "", pageId = "", pageNome = "";
+    string adAccount = "", pageId = "", pageNome = "", tokenNovo = "";
     string? erro; bool ocupado; bool salvo;
+
+    async Task GravarToken()
+    {
+        erro = null; ocupado = true;
+        try
+        {
+            var r = await Api.GravarTokenDoSquadAsync(Cliente, tokenNovo);
+            tokenNovo = "";
+            if (r.Valido == false) erro = $"a Meta recusou o token: {r.Motivo}";
+        }
+        catch (Exception ex) { erro = ex.Message; }
+        finally { ocupado = false; }
+    }
 
     protected override void OnParametersSet()
     {
