@@ -1,0 +1,177 @@
+@page "/"
+@inject FonteDeDados Fonte
+@inject NavigationManager Nav
+@implements IDisposable
+
+<PageTitle>Blue OS · Gestor de Tráfego</PageTitle>
+
+@if (sel is null)
+{
+    <section class="cabecalho">
+        <div>
+            <h1>Carteira</h1>
+            <p class="text-2">Cada card diz em que estágio o cliente está. Abra um cliente e o fluxo segue na mesma tela, da chegada à automação.</p>
+        </div>
+        <div class="cabecalho-acoes">
+            <input class="busca" placeholder="Buscar cliente" @bind="busca" @bind:event="oninput" />
+            <button type="button" class="btn btn-destaque" @onclick="() => novo = true">+ Novo cliente</button>
+        </div>
+    </section>
+
+    @if (novo)
+    {
+        <div class="caixa caixa-nova">
+            <label>Nome do cliente<input @bind="nomeNovo" placeholder="Como o cliente se chama" /></label>
+            <label>Squad<input @bind="squadNovo" /></label>
+            <div class="acoes">
+                <button type="button" class="btn btn-ghost" @onclick="() => novo = false">Cancelar</button>
+                <button type="button" class="btn btn-destaque" @onclick="CriarCliente" disabled="@string.IsNullOrWhiteSpace(nomeNovo)">Cadastrar e abrir</button>
+            </div>
+        </div>
+    }
+
+    <div class="filtros" role="tablist" aria-label="Filtrar por estágio">
+        <button type="button" class="chip @(filtro is null ? "ativo" : "")" @onclick="() => filtro = null">todos <b>@clientes.Count</b></button>
+        @foreach (var d in Estagios.Lista)
+        {
+            var n = clientes.Count(c => EstagioDe(c) == d.Estagio);
+            <button type="button" class="chip @(filtro == d.Estagio ? "ativo" : "")" @onclick="() => filtro = d.Estagio">@d.Curto <b>@n</b></button>
+        }
+    </div>
+
+    @if (erro is not null) { <p class="erro" role="alert">@erro</p> }
+    @if (carregando) { <p class="text-3">Lendo a carteira…</p> }
+    else if (Filtrados.Count == 0) { <p class="text-3">Nenhum cliente neste recorte.</p> }
+
+    <div class="grade-cartoes">
+        @foreach (var c in Filtrados)
+        {
+            <CartaoCliente @key="c.Slug" Cliente="c" Estagio="EstagioDe(c)" Pendencias="Estagios.PendenciasDoEstagio(c, Api.Parametros)" Abrir="Abrir" />
+        }
+    </div>
+}
+else
+{
+    <section class="cliente-topo">
+        <button type="button" class="btn btn-ghost" @onclick="Fechar">&larr; Carteira</button>
+        <div class="cliente-topo-nome">
+            <h1>@sel.Nome</h1>
+            <div class="text-3">@sel.Squad &middot; @sel.Status.Replace('_', ' ') &middot; @(sel.NichoSlug is null ? "sem nicho" : Nichos.Rotulo(sel.NichoSlug)) &middot; @(sel.BudgetMensal is null ? "sem budget" : Dinheiro.ReaisCurto(Dinheiro.CentavosDe(sel.BudgetMensal.Value)) + "/mês")</div>
+        </div>
+        <span class="pilula pilula-estagio">@Estagios.Descricao(EstagioDe(sel)).Titulo</span>
+    </section>
+
+    <Stepper Atual="EstagioDe(sel)" Aberta="aba" Abrir="e => aba = e" />
+
+    <section class="etapa">
+        <header class="etapa-cabecalho">
+            <h2>@Estagios.Descricao(aba).Titulo</h2>
+            <p class="text-2">@Estagios.Descricao(aba).Frase</p>
+        </header>
+        @if (erro is not null) { <p class="erro" role="alert">@erro</p> }
+        @switch (aba)
+        {
+            case Estagio.Chegada:
+                <div class="caixa">
+                    <p>O cliente chegou em <strong>@sel.Desde.ToString("dd/MM/yyyy")</strong>, no squad <strong>@sel.Squad</strong>. O fluxo começa pelos assets dele: a logo, as telas do produto, a conta de anúncios e a página. Depois a ficha, e então o agente de tráfego assume.</p>
+                    <button type="button" class="btn btn-destaque" @onclick="() => aba = Estagio.Assets">Cadastrar os assets &rarr;</button>
+                </div>
+                break;
+            case Estagio.Assets:
+                <EtapaAssets Cliente="sel" Api="Api" Avancar="() => aba = Estagio.Ficha" />
+                break;
+            case Estagio.Ficha:
+                <EtapaFicha Cliente="sel" Api="Api" Avancar="() => aba = Estagio.Copy" />
+                break;
+            case Estagio.Copy:
+                <EtapaCopy Cliente="sel" Api="Api" Avancar="() => aba = Estagio.Design" />
+                break;
+            case Estagio.Design:
+                <EtapaDesign Cliente="sel" Api="Api" Avancar="() => aba = Estagio.Campanha" />
+                break;
+            case Estagio.Campanha:
+                <EtapaCampanha Cliente="sel" Api="Api" Avancar="() => aba = Estagio.Automacao" />
+                break;
+            default:
+                <EtapaAutomacao Cliente="sel" Api="Api" />
+                break;
+        }
+    </section>
+}
+
+@code {
+    IBlueApi Api => Fonte.Atual;
+    List<Cliente> clientes = new();
+    Cliente? sel;
+    Estagio aba;
+    Estagio? filtro;
+    string busca = "";
+    string? erro;
+    bool carregando;
+    bool novo;
+    string nomeNovo = "";
+    string squadNovo = "POSEIDON";
+    IBlueApi? apiVista;
+
+    List<Cliente> Filtrados => clientes
+        .Where(c => filtro is null || EstagioDe(c) == filtro)
+        .Where(c => string.IsNullOrWhiteSpace(busca) || c.Nome.Contains(busca, StringComparison.OrdinalIgnoreCase) || c.Slug.Contains(busca, StringComparison.OrdinalIgnoreCase))
+        .OrderBy(c => (int)EstagioDe(c)).ThenBy(c => c.Nome)
+        .ToList();
+
+    Estagio EstagioDe(Cliente c) => Estagios.DoCliente(c, Api.Parametros);
+
+    protected override async Task OnInitializedAsync()
+    {
+        Fonte.Mudou += Mudou;
+        await Carregar();
+        /* Deep link, como o `?agente=lp&cliente=<slug>` do V1: /?cliente=<slug>&etapa=automacao
+           abre direto no cliente e na etapa (o sino do OS e o chat podem mandar gente para cá). */
+        var q = System.Web.HttpUtility.ParseQueryString(new Uri(Nav.Uri).Query);
+        var slug = q["cliente"];
+        if (!string.IsNullOrWhiteSpace(slug) && clientes.FirstOrDefault(c => c.Slug == slug) is { } alvo)
+        {
+            await Abrir(alvo);
+            if (Enum.TryParse<Estagio>(q["etapa"], ignoreCase: true, out var e)) aba = e;
+        }
+    }
+
+    async Task Carregar()
+    {
+        carregando = true; erro = null;
+        try { clientes = (await Api.ListarClientesAsync()).ToList(); apiVista = Api; }
+        catch (Exception e) { erro = e.Message; clientes = new(); }
+        finally { carregando = false; }
+    }
+
+    void Mudou() => InvokeAsync(async () =>
+    {
+        if (!ReferenceEquals(apiVista, Api)) { sel = null; await Carregar(); }
+        StateHasChanged();
+    });
+
+    async Task Abrir(Cliente c)
+    {
+        erro = null;
+        try { sel = await Api.ObterClienteAsync(c.Slug) ?? c; }
+        catch (Exception e) { erro = e.Message; sel = c; }
+        aba = EstagioDe(sel);
+    }
+
+    void Fechar() { sel = null; erro = null; }
+
+    async Task CriarCliente()
+    {
+        erro = null;
+        try
+        {
+            var c = await Api.CriarClienteAsync(nomeNovo, string.IsNullOrWhiteSpace(squadNovo) ? "POSEIDON" : squadNovo.Trim().ToUpperInvariant());
+            novo = false; nomeNovo = "";
+            await Carregar();
+            await Abrir(c);
+        }
+        catch (Exception e) { erro = e.Message; }
+    }
+
+    public void Dispose() => Fonte.Mudou -= Mudou;
+}

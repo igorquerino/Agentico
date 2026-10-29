@@ -1,0 +1,19 @@
+@* O fluxo único, do início ao fim, sem mudar de tela: cada etapa é clicável. *@
+<ol class="stepper" aria-label="Etapas do fluxo">
+    @foreach (var d in Estagios.Lista)
+    {
+        var classe = d.Estagio < Atual ? "feita" : d.Estagio == Atual ? "atual" : "futura";
+        <li class="passo @classe @(d.Estagio == Aberta ? "aberta" : "")" @onclick="() => Abrir.InvokeAsync(d.Estagio)" title="@d.Frase">
+            <span class="num">@(d.Estagio < Atual ? "✓" : ((int)d.Estagio + 1).ToString())</span>
+            <span class="rot">@d.Curto</span>
+        </li>
+    }
+</ol>
+
+@code {
+    /// <summary>O estágio em que o cliente está (o primeiro incompleto).</summary>
+    [Parameter] public Estagio Atual { get; set; }
+    /// <summary>A etapa que está aberta na tela.</summary>
+    [Parameter] public Estagio Aberta { get; set; }
+    [Parameter] public EventCallback<Estagio> Abrir { get; set; }
+}

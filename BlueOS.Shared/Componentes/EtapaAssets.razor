@@ -1,0 +1,145 @@
+@* Assets do cliente: marca (bucket brand-assets), conta de anúncios, página, token do squad. *@
+<div class="grade-2">
+    <div class="caixa">
+        <h3>Marca &amp; telas</h3>
+        <p class="text-3 mini">Imagem, PDF ou texto até 10 MB. Subir o mesmo arquivo no mesmo campo substitui; o tipo faz parte da identidade do asset (migration 0057).</p>
+        @foreach (var tipo in new[] { TipoDeAsset.LogoPrincipal, TipoDeAsset.LogoVariacao, TipoDeAsset.Tela })
+        {
+            var dos = Cliente.Assets.Where(a => a.Tipo == tipo).ToList();
+            <div class="campo-asset">
+                <div class="campo-asset-cab">
+                    <strong>@Asset.RotuloDoTipo(tipo)</strong>
+                    <label class="btn btn-ghost btn-mini">
+                        @(dos.Count == 0 ? "Subir" : "Subir outro")
+                        <InputFile OnChange="e => Subir(e, tipo)" accept="image/*,.pdf,.txt,.md" multiple="@(tipo == TipoDeAsset.Tela)" style="display:none" />
+                    </label>
+                </div>
+                @if (dos.Count == 0) { <p class="text-3 mini">nenhum arquivo</p> }
+                <ul class="lista-assets">
+                    @foreach (var a in dos)
+                    {
+                        <li>
+                            @if (a.Url is not null && a.Mime.StartsWith("image/")) { <img src="@a.Url" alt="" /> } else { <span class="thumb-vazia">@a.Mime.Split('/').Last()</span> }
+                            <span class="nome">@a.Nome</span>
+                            <span class="text-3 mini">@((a.TamanhoBytes / 1024.0).ToString("0")) KB</span>
+                            <button type="button" class="btn btn-ghost btn-mini" @onclick="() => Remover(a)" title="Remover">&#10006;</button>
+                        </li>
+                    }
+                </ul>
+            </div>
+        }
+    </div>
+
+    <div class="caixa">
+        <h3>Conta de anúncios &amp; página</h3>
+        <label>ID da conta de anúncios<input @bind="adAccount" placeholder="só o número depois de act_" /></label>
+        <label>ID da página do Facebook<input @bind="pageId" placeholder="o anúncio de cadastro é assinado pela página" /></label>
+        <label>Nome da página<input @bind="pageNome" /></label>
+        <div class="acoes">
+            <button type="button" class="btn btn-destaque" @onclick="Conectar" disabled="@ocupado">Conectar conta</button>
+            @if (Cliente.ContaConectada) { <button type="button" class="btn btn-ghost" @onclick="Desconectar" disabled="@ocupado">Desconectar</button> }
+        </div>
+        <p class="mini @(Cliente.ContaConectada ? "ok" : "warn")">@(Cliente.ContaConectada ? $"conectada: {Cliente.Conta.ActId}" : "sem conta de anúncios vinculada")</p>
+
+        <h3 class="mt">Token Meta do squad @Cliente.Squad</h3>
+        <p class="text-3 mini">A credencial é do squad (System User), gravada no setup do V1. Existir não é funcionar: a conferência pergunta à Meta (/me).</p>
+        <div class="acoes">
+            <button type="button" class="btn btn-ghost" @onclick="Conferir" disabled="@ocupado">Conferir token</button>
+            <span class="pilula @(Cliente.Conta.TokenValido == true ? "pilula-ok" : Cliente.Conta.TokenValido == false ? "pilula-err" : "")">
+                @(Cliente.Conta.TokenValido == true ? "a Meta aceitou o token" : Cliente.Conta.TokenValido == false ? "a Meta recusou: " + Cliente.Conta.TokenMotivo : "não conferido")
+            </span>
+        </div>
+
+        <h3 class="mt">O que o Start precisa saber</h3>
+        <label class="opcao"><input type="checkbox" @bind="Cliente.Conta.TemLista" /> o cliente subiu lista de clientes ou leads (público personalizado do BOFU)</label>
+        <label class="opcao"><input type="checkbox" @bind="Cliente.Conta.TemSiteOuTag" /> tem site com pixel ou tag (público de site no TOFU)</label>
+        <label>URL da política de privacidade<input @bind="Cliente.Conta.PoliticaUrl" placeholder="https://" /></label>
+        <label>Link do anúncio (site do cliente)<input @bind="Cliente.Conta.Link" placeholder="https://" /></label>
+        <div class="acoes">
+            <button type="button" class="btn btn-ghost" @onclick="SalvarConta" disabled="@ocupado">Salvar</button>
+            @if (salvo) { <span class="ok mini">salvo</span> }
+        </div>
+    </div>
+</div>
+
+@if (erro is not null) { <p class="erro" role="alert">@erro</p> }
+
+<footer class="etapa-rodape">
+    @{ var (ok, pend) = Estagios.AssetsCompletos(Cliente); }
+    @if (ok) { <span class="ok">Assets completos.</span> } else { <span class="warn">Falta: @string.Join(", ", pend).</span> }
+    <button type="button" class="btn btn-destaque" @onclick="() => Avancar.InvokeAsync()">Ir para a ficha &rarr;</button>
+</footer>
+
+@code {
+    [Parameter] public required Cliente Cliente { get; set; }
+    [Parameter] public required IBlueApi Api { get; set; }
+    [Parameter] public EventCallback Avancar { get; set; }
+
+    string adAccount = "", pageId = "", pageNome = "";
+    string? erro; bool ocupado; bool salvo;
+
+    protected override void OnParametersSet()
+    {
+        adAccount = Cliente.Conta.AdAccountId ?? adAccount;
+        pageId = Cliente.Conta.PageId ?? pageId;
+        pageNome = Cliente.Conta.PageNome ?? pageNome;
+    }
+
+    async Task Subir(InputFileChangeEventArgs e, TipoDeAsset tipo)
+    {
+        erro = null; ocupado = true;
+        try
+        {
+            foreach (var f in e.GetMultipleFiles(10))
+            {
+                using var ms = new MemoryStream();
+                await f.OpenReadStream(10 * 1024 * 1024).CopyToAsync(ms);
+                await Api.SubirAssetAsync(Cliente, tipo, f.Name, string.IsNullOrEmpty(f.ContentType) ? "application/octet-stream" : f.ContentType, ms.ToArray());
+            }
+        }
+        catch (Exception ex) { erro = ex.Message; }
+        finally { ocupado = false; }
+    }
+
+    async Task Remover(Asset a)
+    {
+        erro = null;
+        try { await Api.RemoverAssetAsync(Cliente, a.Id); } catch (Exception ex) { erro = ex.Message; }
+    }
+
+    async Task Conectar()
+    {
+        erro = null; ocupado = true;
+        try
+        {
+            var r = await Api.ConectarContaAsync(Cliente, adAccount, pageId, pageNome);
+            if (!r.Ok) erro = r.Erro;
+        }
+        catch (Exception ex) { erro = ex.Message; }
+        finally { ocupado = false; }
+    }
+
+    async Task Desconectar()
+    {
+        erro = null; ocupado = true;
+        try { await Api.ConectarContaAsync(Cliente, null, pageId, pageNome); adAccount = ""; }
+        catch (Exception ex) { erro = ex.Message; }
+        finally { ocupado = false; }
+    }
+
+    async Task Conferir()
+    {
+        erro = null; ocupado = true;
+        try { await Api.ConferirTokenAsync(Cliente); }
+        catch (Exception ex) { erro = ex.Message; }
+        finally { ocupado = false; }
+    }
+
+    async Task SalvarConta()
+    {
+        erro = null; ocupado = true; salvo = false;
+        try { await Api.SalvarContaAsync(Cliente); salvo = true; }
+        catch (Exception ex) { erro = ex.Message; }
+        finally { ocupado = false; }
+    }
+}

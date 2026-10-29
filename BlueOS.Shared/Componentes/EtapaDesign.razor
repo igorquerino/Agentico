@@ -1,0 +1,93 @@
+@* O agente gera as artes das peças aprovadas; o gestor escolhe o criativo piloto do Start. *@
+@{
+    var aprovadas = Cliente.Pecas.Where(p => p.Aprovada && p.CrivoOk).ToList();
+}
+<div class="grade-2">
+    <div class="caixa">
+        <h3>Peças aprovadas</h3>
+        @if (aprovadas.Count == 0) { <p class="text-3">Nenhuma peça aprovada ainda: volte à etapa Copy.</p> }
+        <ul class="lista-simples">
+            @foreach (var p in aprovadas)
+            {
+                <li><label class="opcao"><input type="checkbox" checked="@escolhidas.Contains(p.Id)" @onchange="e => Marcar(p.Id, e)" /> <span class="pilula pilula-etapa">@p.Etapa</span> <span>@p.Headline</span></label></li>
+            }
+        </ul>
+        <div class="formatos">
+            <label class="opcao"><input type="checkbox" @bind="feed" /> feed 1080x1080</label>
+            <label class="opcao"><input type="checkbox" @bind="story" /> story 1080x1920</label>
+        </div>
+        <div class="acoes">
+            <button type="button" class="btn btn-destaque" @onclick="Gerar" disabled="@(ocupado || escolhidas.Count == 0 || (!feed && !story))">@(ocupado ? "Gerando…" : $"Gerar {escolhidas.Count * ((feed ? 1 : 0) + (story ? 1 : 0))} arte(s)")</button>
+        </div>
+        <p class="text-3 mini">@(Api.EhDemo ? "Demonstração: a arte é diagramada em SVG (HEAD, SUB, CTA e marca). No V1 a imagem sai do modelo de imagem do Designer e o texto é carimbado em camadas." : "No V1 as artes vêm da biblioteca do Designer (/api/trafego/pecas-designer).")</p>
+    </div>
+    <div class="caixa">
+        <h3>Criativo piloto</h3>
+        <p class="text-3 mini">A arte que vai para todos os conjuntos do Start (1 anúncio por conjunto, AD-MT-17). Trocar o criativo depois é decisão do motor, pela árvore.</p>
+        @if (Cliente.ArtePiloto is { } piloto)
+        {
+            <img class="piloto" src="@piloto.Url" alt="@piloto.Titulo" />
+            <p class="mini">@piloto.Titulo</p>
+        }
+        else { <p class="warn mini">nenhum piloto escolhido</p> }
+    </div>
+</div>
+
+@if (erro is not null) { <p class="erro" role="alert">@erro</p> }
+
+<div class="galeria">
+    @foreach (var a in Cliente.Artes)
+    {
+        <figure class="arte @(a.Aprovada ? "aprovada" : "") @(a.Id == Cliente.ArtePilotoId ? "piloto" : "")">
+            <img src="@a.Url" alt="@a.Titulo" loading="lazy" />
+            <figcaption>
+                <div class="mini">@a.Titulo</div>
+                <div class="acoes">
+                    <button type="button" class="btn btn-mini @(a.Aprovada ? "btn-ghost" : "btn-destaque")" @onclick="() => Aprovar(a)">@(a.Aprovada ? "Desaprovar" : "Aprovar")</button>
+                    <button type="button" class="btn btn-mini @(a.Id == Cliente.ArtePilotoId ? "btn-ok" : "btn-ghost")" @onclick="() => Piloto(a)">@(a.Id == Cliente.ArtePilotoId ? "piloto" : "Usar como piloto")</button>
+                </div>
+            </figcaption>
+        </figure>
+    }
+</div>
+
+<footer class="etapa-rodape">
+    @{ var (ok, pend) = Estagios.DesignPronto(Cliente); }
+    @if (ok) { <span class="ok">Criativo piloto escolhido.</span> } else { <span class="warn">Falta: @string.Join(", ", pend).</span> }
+    <button type="button" class="btn btn-destaque" @onclick="() => Avancar.InvokeAsync()">Ir para a campanha &rarr;</button>
+</footer>
+
+@code {
+    [Parameter] public required Cliente Cliente { get; set; }
+    [Parameter] public required IBlueApi Api { get; set; }
+    [Parameter] public EventCallback Avancar { get; set; }
+
+    HashSet<string> escolhidas = new();
+    bool feed = true, story = true;
+    string? erro; bool ocupado;
+    Cliente? visto;
+
+    protected override void OnParametersSet()
+    {
+        if (ReferenceEquals(visto, Cliente)) return;
+        visto = Cliente;
+        escolhidas = Cliente.Pecas.Where(p => p.Aprovada && p.CrivoOk).Take(3).Select(p => p.Id).ToHashSet();
+    }
+
+    void Marcar(string id, ChangeEventArgs e) { if (e.Value is true) escolhidas.Add(id); else escolhidas.Remove(id); }
+
+    async Task Gerar()
+    {
+        erro = null; ocupado = true;
+        try
+        {
+            var formatos = new List<string>(); if (feed) formatos.Add("feed"); if (story) formatos.Add("story");
+            await Api.GerarArtesAsync(Cliente, escolhidas.ToList(), formatos);
+        }
+        catch (Exception ex) { erro = ex.Message; }
+        finally { ocupado = false; }
+    }
+
+    async Task Aprovar(Arte a) { erro = null; try { await Api.AprovarArteAsync(Cliente, a.Id, !a.Aprovada); } catch (Exception ex) { erro = ex.Message; } }
+    async Task Piloto(Arte a) { erro = null; try { await Api.EscolherPilotoAsync(Cliente, a.Id == Cliente.ArtePilotoId ? null : a.Id); } catch (Exception ex) { erro = ex.Message; } }
+}

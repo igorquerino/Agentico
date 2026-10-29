@@ -1,0 +1,440 @@
+using System.Net;
+using System.Net.Http.Headers;
+using System.Net.Http.Json;
+using System.Text.Json;
+using BlueOS.Core.Copy;
+using BlueOS.Core.Modelos;
+using BlueOS.Core.Motor;
+
+namespace BlueOS.Core.Api;
+
+/* ============================================================================
+   O CLIENTE TIPADO DAS ROTAS DO V1 (Next.js, porta 3080 no dev).
+   ----------------------------------------------------------------------------
+   Plano de migração, "Começar pelo desktop": o desktop lê as rotas que o V1 já
+   tem; quando a API .NET existir, só o endereço muda. A sessão é a da pessoa
+   (cookie do Supabase gravado pelo /api/os/login); o app NUNCA guarda chave do
+   banco nem service role.
+
+   As rotas e os corpos abaixo são os lidos no V1 em 29/10/2026:
+     POST /api/os/login                          { login, senha }
+     GET  /api/trafego/clientes                  → clientes[] (id, slug, nome, status, temConta, adAccountId, squads)
+     GET/POST /api/os/clientes/{id}/trafego      { nicho_slug?, budget_mensal? }
+     GET/POST /api/os/clientes/{id}/mql          { regua?, teto_mql?, nicho_slug? }
+     GET/POST /api/os/clientes/{id}/assets       multipart file + tipo
+     POST /api/trafego/conectar-conta            { cliente_slug, ad_account_id | desconectar }
+     GET  /api/trafego/token-meta                → squads[] com valido
+     POST /api/os/copy/gerar                     { cliente_id, itens[], briefing? }
+     GET  /api/trafego/pecas-designer?cliente=   → pecas[] (id, titulo, lote, url)
+     GET  /api/trafego/motor/estrutura?cliente=  → { ok, estrutura } | { ok:false, falta, motivo }
+     POST /api/trafego/motor/publicar            { cliente_slug, designer_peca_id, texto?, politica_url?, link?, formulario_id? }
+     GET  /api/trafego/motor/ongoing?cliente=    → kpis, leads, acoes, semRegua
+     GET/POST /api/trafego/motor/recomendacoes   { cliente_slug }
+     POST /api/trafego/motor/decisao             { recomendacao_id, decisao, motivo? }
+     GET/PATCH /api/trafego/motor/execucao       { cliente_slug, modo } | { chave_geral: { ligada, motivo } }
+
+   ⚠️ Este cliente NÃO foi exercitado contra um V1 em execução nesta sessão.
+   O que não tem rota no V1 (salvar a ficha inteira, gerar arte por aqui) lança
+   NotSupportedException com o motivo, em vez de fingir que gravou.
+   ============================================================================ */
+public sealed class V1Api : IBlueApi, IDisposable
+{
+    readonly HttpClient _http;
+    readonly CookieContainer _cookies = new();
+    readonly Dictionary<string, Cliente> _cache = new();
+    string? _usuario;
+
+    public string BaseUrl { get; }
+    public string Origem => $"V1 · {BaseUrl}{(_usuario is null ? " (sem sessão)" : $" · {_usuario}")}";
+    public bool EhDemo => false;
+    public ParametrosMotor Parametros { get; } = ParametrosMotor.PadraoDoVault;
+    public bool PodeSimularVeiculacao => false;
+    public event Action? Mudou;
+    void Avisar() => Mudou?.Invoke();
+
+    public V1Api(string baseUrl)
+    {
+        BaseUrl = baseUrl.TrimEnd('/');
+        var handler = new HttpClientHandler { CookieContainer = _cookies, UseCookies = true, AllowAutoRedirect = false };
+        _http = new HttpClient(handler) { BaseAddress = new Uri(BaseUrl + "/"), Timeout = TimeSpan.FromSeconds(320) };
+        _http.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+    }
+
+    public void Dispose() => _http.Dispose();
+
+    /* ---- sessão -------------------------------------------------------------- */
+
+    public async Task<string> LoginAsync(string login, string senha)
+    {
+        var r = await _http.PostAsJsonAsync("api/os/login", new { login, senha });
+        var j = await LerJson(r);
+        if (!r.IsSuccessStatusCode) throw new InvalidOperationException(Erro(j, "login recusado"));
+        _usuario = j.TryGetProperty("usuario", out var u) && u.TryGetProperty("nome", out var n) ? n.GetString() : login;
+        Avisar();
+        return _usuario ?? login;
+    }
+
+    static async Task<JsonElement> LerJson(HttpResponseMessage r)
+    {
+        var texto = await r.Content.ReadAsStringAsync();
+        if (string.IsNullOrWhiteSpace(texto)) return default;
+        try { return JsonDocument.Parse(texto).RootElement.Clone(); }
+        catch { return default; }
+    }
+
+    static string Erro(JsonElement j, string padrao) =>
+        j.ValueKind == JsonValueKind.Object && j.TryGetProperty("error", out var e) && e.ValueKind == JsonValueKind.String ? e.GetString()! : padrao;
+
+    async Task<JsonElement> Get(string rota)
+    {
+        var r = await _http.GetAsync(rota);
+        if (r.StatusCode is HttpStatusCode.Redirect or HttpStatusCode.TemporaryRedirect or HttpStatusCode.Unauthorized)
+            throw new InvalidOperationException("sem sessão no V1: faça o login de novo.");
+        var j = await LerJson(r);
+        if (!r.IsSuccessStatusCode) throw new InvalidOperationException(Erro(j, $"o V1 respondeu {(int)r.StatusCode} em {rota}"));
+        return j;
+    }
+
+    async Task<JsonElement> Envie(HttpMethod metodo, string rota, object corpo)
+    {
+        var req = new HttpRequestMessage(metodo, rota) { Content = JsonContent.Create(corpo) };
+        var r = await _http.SendAsync(req);
+        var j = await LerJson(r);
+        if (!r.IsSuccessStatusCode) throw new InvalidOperationException(Erro(j, $"o V1 respondeu {(int)r.StatusCode} em {rota}"));
+        return j;
+    }
+
+    static string? S(JsonElement j, string nome) =>
+        j.ValueKind == JsonValueKind.Object && j.TryGetProperty(nome, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+    static decimal? D(JsonElement j, string nome) =>
+        j.ValueKind == JsonValueKind.Object && j.TryGetProperty(nome, out var v) && v.ValueKind == JsonValueKind.Number ? v.GetDecimal() : null;
+    static bool? B(JsonElement j, string nome) =>
+        j.ValueKind == JsonValueKind.Object && j.TryGetProperty(nome, out var v) && (v.ValueKind == JsonValueKind.True || v.ValueKind == JsonValueKind.False) ? v.GetBoolean() : null;
+    static IEnumerable<JsonElement> Lista(JsonElement j, string nome) =>
+        j.ValueKind == JsonValueKind.Object && j.TryGetProperty(nome, out var v) && v.ValueKind == JsonValueKind.Array ? v.EnumerateArray() : [];
+
+    /* ---- clientes ------------------------------------------------------------ */
+
+    public async Task<IReadOnlyList<Cliente>> ListarClientesAsync()
+    {
+        var j = await Get("api/trafego/clientes");
+        var saida = new List<Cliente>();
+        foreach (var x in Lista(j, "clientes"))
+        {
+            var slug = S(x, "slug") ?? "";
+            if (!_cache.TryGetValue(slug, out var c))
+            {
+                c = new Cliente { Id = S(x, "id") ?? slug, Slug = slug, Nome = S(x, "nome") ?? slug };
+                _cache[slug] = c;
+            }
+            c.Status = S(x, "status") ?? c.Status;
+            c.Conta.AdAccountId = S(x, "adAccountId") ?? c.Conta.AdAccountId;
+            c.Squad = Lista(x, "squads").FirstOrDefault().GetString() ?? c.Squad;
+            saida.Add(c);
+        }
+        return saida;
+    }
+
+    public async Task<Cliente?> ObterClienteAsync(string slug)
+    {
+        if (!_cache.ContainsKey(slug)) await ListarClientesAsync();
+        if (!_cache.TryGetValue(slug, out var c)) return null;
+        try
+        {
+            var t = await Get($"api/os/clientes/{c.Id}/trafego");
+            c.NichoSlug = S(t, "nicho_slug");
+            c.BudgetMensal = D(t, "budget_mensal");
+        }
+        catch { /* sem cadastro no V1: a tela diz o que falta */ }
+        try
+        {
+            var m = await Get($"api/os/clientes/{c.Id}/mql");
+            c.TetoMql = D(m, "teto_mql");
+            if (m.TryGetProperty("regua", out var rg) && rg.ValueKind == JsonValueKind.Object)
+                c.Regua = JsonSerializer.Deserialize<ReguaV2>(rg.GetRawText(), Json);
+        }
+        catch { }
+        try
+        {
+            var a = await Get($"api/os/clientes/{c.Id}/assets");
+            c.Assets.Clear();
+            foreach (var x in Lista(a, "assets"))
+            {
+                var tipo = S(x, "tipo") switch { "logo_principal" => TipoDeAsset.LogoPrincipal, "logo_variacao" => TipoDeAsset.LogoVariacao, _ => TipoDeAsset.Tela };
+                c.Assets.Add(new Asset { Id = S(x, "asset_id") ?? "", Tipo = tipo, Nome = S(x, "nome") ?? "", Mime = S(x, "mime") ?? "", TamanhoBytes = (long)(D(x, "tamanho_bytes") ?? 0), Origem = S(x, "origem") ?? "manual", EmUso = B(x, "em_uso") ?? true, Url = S(x, "url") });
+            }
+        }
+        catch { }
+        try
+        {
+            var e = await Get($"api/trafego/motor/execucao?cliente={Uri.EscapeDataString(slug)}");
+            c.Modo = S(e, "modo") switch { "sombra" => ModoDeExecucao.Sombra, "executa" => ModoDeExecucao.Executa, _ => ModoDeExecucao.Recomenda };
+        }
+        catch { }
+        try
+        {
+            var p = await Get($"api/trafego/pecas-designer?cliente={Uri.EscapeDataString(slug)}");
+            c.Artes.Clear();
+            foreach (var x in Lista(p, "pecas"))
+                c.Artes.Add(new Arte { Id = S(x, "id") ?? "", PecaId = "", Etapa = Etapa.MOFU, Formato = "feed", Titulo = S(x, "titulo") ?? "", Url = S(x, "url") ?? "", Lote = (int)(D(x, "lote") ?? 0), Aprovada = true });
+        }
+        catch { }
+        try { await ListarRecomendacoesAsync(c); } catch { }
+        return c;
+    }
+
+    static readonly JsonSerializerOptions Json = new() { PropertyNameCaseInsensitive = true, PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
+
+    public async Task<Cliente> CriarClienteAsync(string nome, string squad)
+    {
+        var j = await Envie(HttpMethod.Post, "api/os/clientes/criar", new { nome });
+        await ListarClientesAsync();
+        var slug = S(j, "slug") ?? S(j.TryGetProperty("cliente", out var cl) ? cl : default, "cliente_slug") ?? "";
+        Avisar();
+        return _cache.TryGetValue(slug, out var c) ? c : throw new InvalidOperationException("o cliente foi criado, mas não apareceu na carteira de tráfego: confira o vínculo de squad no V1.");
+    }
+
+    /* ---- ficha --------------------------------------------------------------- */
+
+    public Task SalvarFichaAsync(Cliente c) =>
+        throw new NotSupportedException("salvar a ficha inteira (cadastro, ICP, produto, estratégia) ainda não está ligado ao V1: hoje isso é feito no card do cliente, em /clientes. O card Tráfego e o critério de MQL já gravam por aqui.");
+
+    public async Task SalvarCardTrafegoAsync(Cliente c, string? nichoSlug, decimal? budgetMensal)
+    {
+        await Envie(HttpMethod.Post, $"api/os/clientes/{c.Id}/trafego", new { nicho_slug = nichoSlug, budget_mensal = budgetMensal });
+        c.NichoSlug = nichoSlug; c.BudgetMensal = budgetMensal; Avisar();
+    }
+
+    public async Task SalvarCriterioMqlAsync(Cliente c, ReguaV2? regua, decimal? tetoMql)
+    {
+        object corpo = regua is null
+            ? new { regua = (object?)null, teto_mql = tetoMql }
+            : new { regua = new { versao = 2, perguntas = regua.Perguntas.Select(p => new { nome = p.Nome, chaves = p.Chaves, rotulo = p.Rotulo, forte = p.Forte, media = p.Media, elim = p.Elim }) }, teto_mql = tetoMql };
+        await Envie(HttpMethod.Post, $"api/os/clientes/{c.Id}/mql", corpo);
+        c.Regua = regua; c.TetoMql = tetoMql; Avisar();
+    }
+
+    /* ---- assets -------------------------------------------------------------- */
+
+    public async Task<Asset> SubirAssetAsync(Cliente c, TipoDeAsset tipo, string nome, string mime, byte[] bytes)
+    {
+        using var form = new MultipartFormDataContent();
+        var arquivo = new ByteArrayContent(bytes);
+        arquivo.Headers.ContentType = new MediaTypeHeaderValue(mime);
+        form.Add(arquivo, "file", nome);
+        form.Add(new StringContent(Asset.SlugDoTipo(tipo)), "tipo");
+        var r = await _http.PostAsync($"api/os/clientes/{c.Id}/assets", form);
+        var j = await LerJson(r);
+        if (!r.IsSuccessStatusCode) throw new InvalidOperationException(Erro(j, "o upload falhou"));
+        await ObterClienteAsync(c.Slug);
+        Avisar();
+        return c.Assets.FirstOrDefault(a => a.Id == S(j, "asset_id")) ?? c.Assets.Last();
+    }
+
+    public async Task RemoverAssetAsync(Cliente c, string assetId)
+    {
+        var r = await _http.DeleteAsync($"api/os/clientes/{c.Id}/assets/{assetId}");
+        if (!r.IsSuccessStatusCode) throw new InvalidOperationException(Erro(await LerJson(r), "não consegui remover o asset"));
+        c.Assets.RemoveAll(a => a.Id == assetId); Avisar();
+    }
+
+    public async Task<ResultadoDaConta> ConectarContaAsync(Cliente c, string? adAccountId, string? pageId, string? pageNome)
+    {
+        try
+        {
+            object corpo = string.IsNullOrWhiteSpace(adAccountId)
+                ? new { cliente_slug = c.Slug, desconectar = true }
+                : new { cliente_slug = c.Slug, ad_account_id = adAccountId.Trim() };
+            await Envie(HttpMethod.Post, "api/trafego/conectar-conta", corpo);
+            c.Conta.AdAccountId = string.IsNullOrWhiteSpace(adAccountId) ? null : adAccountId.Trim().Replace("act_", "");
+            c.Conta.PageId = pageId; c.Conta.PageNome = pageNome;
+            Avisar();
+            return new(true, null);
+        }
+        catch (Exception e) { return new(false, e.Message); }
+    }
+
+    public Task SalvarContaAsync(Cliente c) { Avisar(); return Task.CompletedTask; }
+
+    public async Task<EstadoDoToken> ConferirTokenAsync(Cliente c)
+    {
+        var j = await Get("api/trafego/token-meta");
+        foreach (var s in Lista(j, "squads"))
+        {
+            if (!string.Equals(S(s, "nome"), c.Squad, StringComparison.OrdinalIgnoreCase)) continue;
+            c.Conta.TokenValido = B(s, "valido"); c.Conta.TokenMotivo = S(s, "motivo"); c.Conta.TokenConferidoEm = DateTime.Now;
+            Avisar();
+            return new(c.Conta.TokenValido, c.Conta.TokenMotivo);
+        }
+        return new(null, $"o squad {c.Squad} não está no seu escopo do token Meta.");
+    }
+
+    /* ---- copy ---------------------------------------------------------------- */
+
+    public async Task<LoteDeCopy> GerarCopyAsync(Cliente c, IReadOnlyList<GeradorDemo.Pedido> pedido, string? briefing)
+    {
+        var itens = pedido.Select(p => new { tipo = p.Tipo == TipoPeca.Video ? "video" : "estatico", funil = p.Etapa.ToString().ToLowerInvariant(), n_pecas = p.NPecas });
+        var j = await Envie(HttpMethod.Post, "api/os/copy/gerar", new { cliente_id = c.Id, itens, briefing });
+        var lote = new LoteDeCopy { Id = S(j, "lote_id") ?? Guid.NewGuid().ToString("n"), Numero = c.Lotes.Count + 1, Modelo = S(j, "modelo") ?? "", Briefing = briefing, VaultSha = Parametros.VaultSha, NichoSlug = c.NichoSlug };
+        var n = 0;
+        foreach (var item in Lista(j, "itens"))
+        {
+            var funil = S(item, "funil") ?? "mofu";
+            var etapa = funil.ToUpperInvariant() switch { "TOFU" => Etapa.TOFU, "BOFU" => Etapa.BOFU, _ => Etapa.MOFU };
+            var tipo = S(item, "tipo") == "video" ? TipoPeca.Video : TipoPeca.Estatico;
+            foreach (var p in Lista(item, "pecas"))
+            {
+                lote.Pecas.Add(new PecaDeCopy
+                {
+                    Id = S(p, "peca_id") ?? S(p, "id") ?? Guid.NewGuid().ToString("n"), Etapa = etapa, Tipo = tipo, Numero = ++n,
+                    Headline = S(p, "headline") ?? S(p, "hook") ?? "", Sub = S(p, "sub") ?? S(p, "body") ?? S(p, "corpo") ?? "", Cta = S(p, "cta") ?? "",
+                    AnguloHeadline = S(p, "angulo_headline") ?? "outro", PapelSub = S(p, "papel_sub") ?? "fragmento", TipoCta = S(p, "tipo_cta") ?? "outro",
+                    CrivoOk = B(p, "crivo_ok") ?? true, MotivoDoCrivo = S(p, "crivo_motivo"), Hipotese = S(p, "hipotese") ?? "",
+                });
+            }
+        }
+        c.Lotes.Insert(0, lote); Avisar();
+        return lote;
+    }
+
+    public async Task AjustarPecaAsync(Cliente c, string pecaId, string instrucao)
+    {
+        var j = await Envie(HttpMethod.Post, "api/os/copy/ajustar", new { peca_id = pecaId, instrucao });
+        var p = c.Pecas.First(x => x.Id == pecaId);
+        if (j.TryGetProperty("peca", out var np))
+        {
+            p.Headline = S(np, "headline") ?? p.Headline; p.Sub = S(np, "sub") ?? p.Sub; p.Cta = S(np, "cta") ?? p.Cta; p.Versao++;
+        }
+        Avisar();
+    }
+
+    public Task AprovarPecaAsync(Cliente c, string pecaId, bool aprovada)
+    {
+        c.Pecas.First(x => x.Id == pecaId).Aprovada = aprovada; Avisar();
+        return Task.CompletedTask;
+    }
+
+    /* ---- design -------------------------------------------------------------- */
+
+    public Task<IReadOnlyList<Arte>> GerarArtesAsync(Cliente c, IReadOnlyList<string> pecaIds, IReadOnlyList<string> formatos) =>
+        throw new NotSupportedException("gerar arte pelo desktop ainda não está ligado ao V1: gere o lote no Agente Designer (/agentes) e as peças aparecem aqui pela biblioteca (/api/trafego/pecas-designer).");
+
+    public Task AprovarArteAsync(Cliente c, string arteId, bool aprovada) { c.Artes.First(a => a.Id == arteId).Aprovada = aprovada; Avisar(); return Task.CompletedTask; }
+    public Task EscolherPilotoAsync(Cliente c, string? arteId) { c.ArtePilotoId = arteId; Avisar(); return Task.CompletedTask; }
+
+    /* ---- campanha ------------------------------------------------------------ */
+
+    public async Task<ResultadoDaEstrutura> MontarEstruturaAsync(Cliente c)
+    {
+        var j = await Get($"api/trafego/motor/estrutura?cliente={Uri.EscapeDataString(c.Slug)}");
+        if (B(j, "ok") != true) return new(false, null, S(j, "falta"), S(j, "motivo"));
+        /* O V1 já devolve a estrutura pronta; para a tela ser uma só, remontamos com o mesmo planejador. */
+        if (c.BudgetMensal is > 0)
+            return new(true, Estrutura.Montar(c.BudgetMensal.Value, c.Conta.TemLista, c.Conta.TemSiteOuTag, c.TetoMql, c.NichoSlug, Parametros, DateOnly.FromDateTime(DateTime.Now)), null, null);
+        return new(false, null, "budget", "sem budget no card Tráfego");
+    }
+
+    public async Task<ResultadoDaPublicacao> PublicarAsync(Cliente c, PedidoDePublicacao pedido)
+    {
+        if (c.ArtePiloto is null) return new(false, "sem_estrutura", "escolha o criativo piloto (uma peça do Designer) antes de publicar.", false, null, null);
+        var corpo = new
+        {
+            cliente_slug = c.Slug, designer_peca_id = c.ArtePiloto.Id,
+            texto = pedido.Texto is null ? null : new { headline = pedido.Texto.Headline, corpo = pedido.Texto.Corpo, cta = pedido.Texto.Cta },
+            politica_url = pedido.PoliticaUrl, link = pedido.Link, formulario_id = pedido.FormularioId,
+        };
+        var r = await _http.PostAsJsonAsync("api/trafego/motor/publicar", corpo);
+        var j = await LerJson(r);
+        if (B(j, "ok") == true)
+        {
+            var pub = new Publicacao { EstruturaHash = S(j, "estrutura_hash") ?? "", CampanhaId = S(j, "campanha_id"), FormularioId = S(j, "formulario_id"), Link = S(j, "link"), Estado = "ok" };
+            foreach (var cj in Lista(j, "conjuntos")) pub.Conjuntos.Add(new ConjuntoCriado(S(cj, "nome") ?? "", Enum.TryParse<Etapa>(S(cj, "etapa"), out var et) ? et : Etapa.MOFU, S(cj, "publico") ?? "", S(cj, "adset_id") ?? "", 0));
+            foreach (var an in Lista(j, "anuncios")) pub.Anuncios.Add(new AnuncioCriado(S(an, "nome") ?? "", S(an, "adset_id") ?? "", S(an, "ad_id") ?? "", c.ArtePiloto.Id));
+            foreach (var av in Lista(j, "avisos")) pub.Avisos.Add(av.GetString() ?? "");
+            c.Publicacao = pub; Avisar();
+            return new(true, null, null, false, pub, S(j, "recado"));
+        }
+        return new(false, S(j, "codigo"), S(j, "error") ?? S(j, "motivo") ?? $"o V1 respondeu {(int)r.StatusCode}", B(j, "simulado") == true, null, null);
+    }
+
+    /* ---- automação ------------------------------------------------------------ */
+
+    public async Task<Ongoing> LerOngoingAsync(Cliente c)
+    {
+        var j = await Get($"api/trafego/motor/ongoing?cliente={Uri.EscapeDataString(c.Slug)}");
+        var k = j.TryGetProperty("kpis", out var kk) ? kk : default;
+        long L(string n) => (long)(D(k, n) ?? 0);
+        int I(string n) => (int)(D(k, n) ?? 0);
+        var kpis = new KpisDoMes(S(k, "mes") ?? "", L("gastoCentavos"), D(k, "budgetCentavos") is { } bc ? (long)bc : null, I("diasDoMes"), I("diasLidos"), I("leads"), I("avaliados"), I("pendentes"), I("naoMql"), I("mql"), I("mqlA"), I("mqlB"), I("mqlC"),
+            D(k, "metaMql") is { } mm ? (int)mm : null, D(k, "custoPorMqlCentavos") is { } cp ? (long)cp : null, D(k, "tetoCentavos") is { } tc ? (long)tc : null, 0);
+        var leads = Lista(j, "leads").Select(l => new LeadDaCentral
+        {
+            Id = S(l, "lead_id") ?? "", CriadoEm = DateTime.TryParse(S(l, "criado_em"), out var dt) ? dt : DateTime.MinValue, AdsetId = S(l, "adset_id"), Conjunto = S(l, "conjunto"),
+            Situacao = S(l, "situacao") switch { "mql" => Situacao.Mql, "nao_mql" => Situacao.NaoMql, "pendente" => Situacao.Pendente, _ => null },
+            Tier = Enum.TryParse<Tier>(S(l, "tier"), out var t) ? t : null, Motivo = S(l, "motivo"),
+            Respostas = Lista(l, "respostas").Select(r => new Resposta(S(r, "pergunta") ?? "", S(r, "resposta") ?? "")).ToList(),
+        }).ToList();
+        var acoes = Lista(j, "acoes").Select(a => new AcaoDoAgente(DateTime.TryParse(S(a, "quando"), out var q) ? q : DateTime.MinValue, S(a, "tipo") ?? "log", S(a, "texto") ?? "", S(a, "estado"), S(a, "por"), S(a, "motivo"))).ToList();
+        return new Ongoing(kpis, leads, acoes, B(j, "semRegua") ?? false, null);
+    }
+
+    public async Task<RodadaDoMotor> RodarMotorAsync(Cliente c)
+    {
+        var j = await Envie(HttpMethod.Post, "api/trafego/motor/recomendacoes", new { cliente_slug = c.Slug });
+        var recs = await ListarRecomendacoesAsync(c);
+        var naoAgiu = Lista(j, "nao_agiu").Select(x => x.GetString() ?? "").ToList();
+        Avisar();
+        return new RodadaDoMotor(recs.Where(r => r.Estado == EstadoDaRecomendacao.Pendente).ToList(), (int)(D(j, "gravadas") ?? 0), (int)(D(j, "repetidas") ?? 0), [], naoAgiu, [], S(j, "vault_sha"));
+    }
+
+    public async Task<IReadOnlyList<Recomendacao>> ListarRecomendacoesAsync(Cliente c)
+    {
+        var j = await Get($"api/trafego/motor/recomendacoes?cliente={Uri.EscapeDataString(c.Slug)}");
+        c.Recomendacoes.Clear();
+        foreach (var r in Lista(j, "recomendacoes"))
+        {
+            var acao = Enum.TryParse<Acao>(S(r, "acao"), out var a) ? a : Acao.ALERTAR;
+            var numeros = r.TryGetProperty("numeros", out var n) ? n : default;
+            var decisao = new Decisao(acao, Lista(r, "chaves").Select(x => x.GetString() ?? "").ToList(), [], [],
+                new NumerosDaDecisao((double)(D(numeros, "ponderado") ?? 0), (double)(D(numeros, "taxa") ?? 0), D(numeros, "custoCentavos") is { } cc ? (long)cc : null, D(numeros, "multiplo") is { } mu ? (double)mu : null), false, null, false);
+            c.Recomendacoes.Add(new Recomendacao
+            {
+                Id = S(r, "id") ?? "", ClienteSlug = c.Slug, MetaId = S(r, "meta_id") ?? "", Nome = S(numeros, "nome") ?? S(r, "meta_id") ?? "", Acao = acao, Decisao = decisao,
+                Texto = S(r, "texto") ?? "", TextoFonte = S(r, "texto_fonte") ?? "trilha", VaultSha = S(r, "vault_sha") ?? "", ContagemMql = S(r, "contagem_mql") ?? "regua",
+                Estado = S(r, "estado") switch { "aceita" => EstadoDaRecomendacao.Aceita, "negada" => EstadoDaRecomendacao.Negada, "aplicada" => EstadoDaRecomendacao.Aplicada, "falhou" => EstadoDaRecomendacao.Falhou, "incerto" => EstadoDaRecomendacao.Incerto, _ => EstadoDaRecomendacao.Pendente },
+                DecididaPor = S(r, "decidida_por"), Motivo = S(r, "motivo"), DecididaEm = DateTime.TryParse(S(r, "decidida_em"), out var de) ? de : null,
+            });
+        }
+        return c.Recomendacoes.ToList();
+    }
+
+    public async Task<Recomendacao> DecidirAsync(Cliente c, string recomendacaoId, bool aceita, string? motivo)
+    {
+        await Envie(HttpMethod.Post, "api/trafego/motor/decisao", new { recomendacao_id = recomendacaoId, decisao = aceita ? "aceita" : "negada", motivo });
+        var recs = await ListarRecomendacoesAsync(c);
+        Avisar();
+        return recs.First(r => r.Id == recomendacaoId);
+    }
+
+    public async Task MudarModoAsync(Cliente c, ModoDeExecucao modo)
+    {
+        await Envie(HttpMethod.Patch, "api/trafego/motor/execucao", new { cliente_slug = c.Slug, modo = modo.ToString().ToLowerInvariant() });
+        c.Modo = modo; Avisar();
+    }
+
+    public async Task<(bool Ligada, string? Motivo)> ChaveGeralAsync()
+    {
+        var j = await Get("api/trafego/motor/execucao");
+        var cg = j.TryGetProperty("chave_geral", out var x) ? x : default;
+        return (B(cg, "ligada") ?? true, S(cg, "motivo"));
+    }
+
+    public async Task MudarChaveGeralAsync(bool ligada, string? motivo)
+    {
+        await Envie(HttpMethod.Patch, "api/trafego/motor/execucao", new { chave_geral = new { ligada, motivo } });
+        Avisar();
+    }
+
+    public Task SimularVeiculacaoAsync(Cliente c, int dias) =>
+        throw new NotSupportedException("a veiculação é real no V1: ative a campanha no Gerenciador e a carga diária lê a Meta às 07:30 UTC.");
+}

@@ -1,0 +1,225 @@
+@* A ficha do cliente: tudo o que o card do cliente já pergunta no V1, numa etapa só. *@
+<div class="abas-ficha" role="tablist">
+    @foreach (var s in Secoes)
+    {
+        <button type="button" role="tab" class="chip @(secao == s ? "ativo" : "")" @onclick="() => secao = s">@s</button>
+    }
+</div>
+
+@if (secao == "Cadastro")
+{
+    <div class="caixa grade-2">
+        <label>Responsável (dono do negócio)<input @bind="Cliente.Ficha.Responsavel" /></label>
+        <label>E-mail / contato principal<input @bind="Cliente.Ficha.ContatoPrincipal" /></label>
+        <label>WhatsApp<input @bind="Cliente.Ficha.Whatsapp" /></label>
+        <label>Site<input @bind="Cliente.Ficha.Site" placeholder="https://" /></label>
+        <label>CNPJ<input @bind="Cliente.Ficha.Cnpj" /></label>
+        <label>Razão social<input @bind="Cliente.Ficha.RazaoSocial" /></label>
+        <label>Modalidade<select @bind="Cliente.Ficha.Modalidade"><option value="">—</option><option value="mrr">MRR</option><option value="tcv">TCV</option></select></label>
+        <label>@(Cliente.Ficha.Modalidade == "tcv" ? "Valor do contrato" : "MRR")<input @bind="valorContrato" placeholder="ex.: 2.500" /></label>
+        <label>Vencimento<input type="date" @bind="Cliente.Ficha.DataVencimento" /></label>
+    </div>
+}
+else if (secao == "ICP")
+{
+    <div class="caixa">
+        <div class="grade-3">
+            <label>Tipo<select @bind="Cliente.Icp.Tipo">@foreach (var t in Icp.Tipos) { <option value="@t">@t</option> }</select></label>
+            <label>Temperatura<select @bind="Cliente.Icp.Temperatura">@foreach (var t in Icp.Temperaturas) { <option value="@t">@t</option> }</select></label>
+            <label>Nível de consciência (1-5)<select @bind="Cliente.Icp.NivelConsciencia">@foreach (var t in Icp.Niveis) { <option value="@t">@t</option> }</select></label>
+        </div>
+        <div class="grade-2">
+            <label>Segmento<input @bind="Cliente.Icp.Segmento" placeholder="Com quem a peça fala" /></label>
+            <label>Setor<input @bind="Cliente.Icp.Setor" placeholder="Ex: Tecnologia, Saúde, Educação" /></label>
+            <label>Faturamento mínimo<input @bind="Cliente.Icp.FaturamentoMinimo" placeholder="Ex: R$ 10 milhões/ano" /></label>
+            <label>Cargo decisor (a copy é direcionada a ele)<input @bind="Cliente.Icp.CargoDecisor" placeholder="Ex: Diretor de Marketing, CEO, Sócio" /></label>
+            <label>Localização<input @bind="Cliente.Icp.Localizacao" placeholder="Ex: Brasil, São Paulo, Sudeste" /></label>
+            <label>Tamanho de mercado<input @bind="Cliente.Icp.TamanhoMercado" placeholder="Ex: 12 mil clínicas no Brasil" /></label>
+        </div>
+        <label>Persona (quem decide, como pessoa)<textarea @bind="Cliente.Icp.Persona"></textarea></label>
+        <label>Público-alvo (quem a mídia paga alcança)<textarea @bind="Cliente.Icp.PublicoAlvo"></textarea></label>
+        <div class="grade-3">
+            <label>Dores principais (uma por linha)<textarea @bind="dores"></textarea></label>
+            <label>Desejos principais (uma por linha)<textarea @bind="desejos"></textarea></label>
+            <label>Canais onde estão (um por linha)<textarea @bind="canais"></textarea></label>
+        </div>
+        <label>Observações<input @bind="Cliente.Icp.Obs" placeholder="O que mais importa saber deste ICP" /></label>
+    </div>
+}
+else if (secao == "Produto")
+{
+    <div class="caixa grade-2">
+        <label>Nome correto do produto<input @bind="Cliente.Produto.NomeCorreto" /></label>
+        <label>Modelo de negócio<input @bind="Cliente.Produto.ModeloNegocio" /></label>
+        <label>Descrição<textarea @bind="Cliente.Produto.Descricao"></textarea></label>
+        <label>Diferenciais<textarea @bind="Cliente.Produto.Diferenciais"></textarea></label>
+        <label>Funcionalidades-chave<textarea @bind="Cliente.Produto.FuncionalidadesChave"></textarea></label>
+        <label>Objeções comuns<textarea @bind="Cliente.Produto.ObjecoesComuns"></textarea></label>
+        <label>Concorrentes<input @bind="Cliente.Produto.Concorrentes" /></label>
+    </div>
+}
+else if (secao == "Estratégia")
+{
+    <div class="caixa grade-2">
+        <label>Promessa principal<input @bind="Cliente.Estrategia.PromessaPrincipal" /></label>
+        <label>Posicionamento<input @bind="Cliente.Estrategia.Posicionamento" /></label>
+        <label>Diferencial<input @bind="Cliente.Estrategia.Diferencial" /></label>
+        <label>Tipo de funil<input @bind="Cliente.Estrategia.FunilTipo" placeholder="leads por formulário nativo" /></label>
+        <label>Gatilhos<textarea @bind="Cliente.Estrategia.Gatilhos"></textarea></label>
+    </div>
+}
+else if (secao == "Tráfego")
+{
+    <div class="caixa">
+        <p class="text-3 mini">O card Tráfego: nicho (trafego_contas.nicho_slug) e budget mensal de ads (cliente_estrategia.budget_ads_mensal). A Automação e o Copy leem daqui.</p>
+        <div class="grade-2">
+            <label>Nicho
+                <select @bind="nicho">
+                    <option value="">sem nicho</option>
+                    @foreach (var n in Nichos.Slugs) { <option value="@n">@Nichos.Rotulo(n)</option> }
+                </select>
+            </label>
+            <label>Budget mensal de ads (R$)<input @bind="budget" @bind:event="oninput" placeholder="ex.: 3.000" /></label>
+        </div>
+        @{ var b = Dinheiro.BudgetDoTexto(budget); }
+        @if (!b.Ok) { <p class="erro">@b.Erro</p> }
+        else if (b.Valor is { } v)
+        {
+            var faixa = Faixa.DoBudget(Dinheiro.CentavosDe(v), Api.Parametros.Faixas);
+            <p class="mini"><span class="pilula">@Faixa.Rotulo(faixa, Api.Parametros.Faixas)</span> <span class="text-2">@Faixa.EstruturaEmUmaLinha(faixa)</span></p>
+        }
+        <div class="acoes"><button type="button" class="btn btn-destaque" @onclick="SalvarTrafego" disabled="@(ocupado || !b.Ok)">Salvar card Tráfego</button></div>
+    </div>
+}
+else
+{
+    <div class="caixa">
+        <p class="text-3 mini">A régua v2 é a contagem oficial de MQL (PEND-001): cada resposta do formulário é forte, média ou eliminatória. 2 ou mais fortes = tier A, 1 = B, 0 = C. O teto por MQL é o do PPL deste cliente: sem ele o motor não corta, não escala e não troca criativo.</p>
+        <table class="tabela regua">
+            <thead><tr><th>Nome do campo (como a Meta entrega)</th><th>Pergunta (rótulo)</th><th>Fortes</th><th>Médias</th><th>Eliminatórias</th><th></th></tr></thead>
+            <tbody>
+                @foreach (var p in rascunho)
+                {
+                    <tr @key="p">
+                        <td><input @bind="p.Nome" placeholder="ex.: cargo" /></td>
+                        <td><input @bind="p.Rotulo" placeholder="Qual o seu cargo?" /></td>
+                        <td><input value="@string.Join(", ", p.Forte)" @onchange="e => p.Forte = Lista(e)" placeholder="Diretor, Sócio" /></td>
+                        <td><input value="@string.Join(", ", p.Media)" @onchange="e => p.Media = Lista(e)" placeholder="Analista" /></td>
+                        <td><input value="@string.Join(", ", p.Elim)" @onchange="e => p.Elim = Lista(e)" placeholder="Estudante" /></td>
+                        <td><button type="button" class="btn btn-ghost btn-mini" @onclick="() => rascunho.Remove(p)" title="Remover">&#10006;</button></td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+        <div class="acoes">
+            <button type="button" class="btn btn-ghost btn-mini" @onclick="() => rascunho.Add(new PerguntaDaRegua())">+ Pergunta</button>
+        </div>
+        @{ var problemas = Regua.ProblemasDoRascunho(rascunho); }
+        @foreach (var pr in problemas) { <p class="warn mini">@pr</p> }
+        <div class="grade-2">
+            <label>Teto por MQL do PPL (R$)<input @bind="teto" placeholder="ex.: 60" /></label>
+        </div>
+        <div class="acoes"><button type="button" class="btn btn-destaque" @onclick="SalvarMql" disabled="@(ocupado || problemas.Count > 0)">Salvar critério de MQL</button></div>
+    </div>
+}
+
+@if (secao is "Cadastro" or "ICP" or "Produto" or "Estratégia")
+{
+    <div class="acoes">
+        <button type="button" class="btn btn-destaque" @onclick="SalvarFicha" disabled="@ocupado">Salvar @secao.ToLowerInvariant()</button>
+        @if (salvo) { <span class="ok mini">salvo</span> }
+    </div>
+}
+@if (erro is not null) { <p class="erro" role="alert">@erro</p> }
+
+<footer class="etapa-rodape">
+    @{ var (ok, pend) = Estagios.FichaCompleta(Cliente); }
+    @if (ok) { <span class="ok">Ficha completa: o agente de tráfego já pode escrever a copy.</span> } else { <span class="warn">Falta: @string.Join(", ", pend).</span> }
+    <button type="button" class="btn btn-destaque" @onclick="() => Avancar.InvokeAsync()">Ir para a copy &rarr;</button>
+</footer>
+
+@code {
+    [Parameter] public required Cliente Cliente { get; set; }
+    [Parameter] public required IBlueApi Api { get; set; }
+    [Parameter] public EventCallback Avancar { get; set; }
+
+    static readonly string[] Secoes = ["Cadastro", "ICP", "Produto", "Estratégia", "Tráfego", "Critério de MQL"];
+    string secao = "Cadastro";
+    string? erro; bool ocupado; bool salvo;
+    string valorContrato = "", dores = "", desejos = "", canais = "";
+    string nicho = "", budget = "", teto = "";
+    List<PerguntaDaRegua> rascunho = new();
+    Cliente? visto;
+
+    protected override void OnParametersSet()
+    {
+        if (ReferenceEquals(visto, Cliente)) return;
+        visto = Cliente;
+        valorContrato = Dinheiro.NoCampo(Cliente.Ficha.Modalidade == "tcv" ? Cliente.Ficha.ValorTotal : Cliente.Ficha.Mrr);
+        dores = string.Join("\n", Cliente.Icp.DoresPrincipais);
+        desejos = string.Join("\n", Cliente.Icp.DesejosPrincipais);
+        canais = string.Join("\n", Cliente.Icp.CanaisOndeEstao);
+        nicho = Cliente.NichoSlug ?? "";
+        budget = Dinheiro.NoCampo(Cliente.BudgetMensal);
+        teto = Dinheiro.NoCampo(Cliente.TetoMql);
+        rascunho = Cliente.Regua?.Perguntas.Select(p => p.Clonar()).ToList() ?? new();
+        if (rascunho.Count == 0) rascunho.Add(new PerguntaDaRegua());
+        var (ok, _) = Estagios.FichaCompleta(Cliente);
+        secao = ok ? "Tráfego" : Secoes.First(s => Pendente(s));
+    }
+
+    bool Pendente(string s) => s switch
+    {
+        "Cadastro" => string.IsNullOrWhiteSpace(Cliente.Ficha.Responsavel) || string.IsNullOrWhiteSpace(Cliente.Ficha.Site),
+        "ICP" => string.IsNullOrWhiteSpace(Cliente.Icp.CargoDecisor) || Cliente.Icp.DoresPrincipais.Count == 0,
+        "Produto" => string.IsNullOrWhiteSpace(Cliente.Produto.NomeCorreto),
+        "Estratégia" => string.IsNullOrWhiteSpace(Cliente.Estrategia.PromessaPrincipal),
+        "Tráfego" => Cliente.NichoSlug is null || Cliente.BudgetMensal is null,
+        _ => true,
+    };
+
+    static List<string> Lista(ChangeEventArgs e) => (e.Value?.ToString() ?? "").Split(',').Select(x => x.Trim()).Where(x => x != "").ToList();
+    static List<string> Linhas(string t) => t.Split('\n').Select(x => x.Trim()).Where(x => x != "").ToList();
+
+    async Task SalvarFicha()
+    {
+        erro = null; ocupado = true; salvo = false;
+        try
+        {
+            var v = Dinheiro.ReaisDoTexto(valorContrato);
+            if (Cliente.Ficha.Modalidade == "tcv") { Cliente.Ficha.ValorTotal = v; Cliente.Ficha.Mrr = null; } else { Cliente.Ficha.Mrr = v; Cliente.Ficha.ValorTotal = null; }
+            Cliente.Icp.DoresPrincipais = Linhas(dores);
+            Cliente.Icp.DesejosPrincipais = Linhas(desejos);
+            Cliente.Icp.CanaisOndeEstao = Linhas(canais);
+            await Api.SalvarFichaAsync(Cliente);
+            salvo = true;
+        }
+        catch (Exception ex) { erro = ex.Message; }
+        finally { ocupado = false; }
+    }
+
+    async Task SalvarTrafego()
+    {
+        erro = null; ocupado = true;
+        try
+        {
+            var b = Dinheiro.BudgetDoTexto(budget);
+            if (!b.Ok) { erro = b.Erro; return; }
+            await Api.SalvarCardTrafegoAsync(Cliente, string.IsNullOrEmpty(nicho) ? null : nicho, b.Valor);
+        }
+        catch (Exception ex) { erro = ex.Message; }
+        finally { ocupado = false; }
+    }
+
+    async Task SalvarMql()
+    {
+        erro = null; ocupado = true;
+        try
+        {
+            var regua = new ReguaV2 { Perguntas = rascunho.Where(p => !string.IsNullOrWhiteSpace(p.Nome)).Select(p => p.Clonar()).ToList() };
+            await Api.SalvarCriterioMqlAsync(Cliente, regua.Perguntas.Count == 0 ? null : regua, Dinheiro.ReaisDoTexto(teto));
+        }
+        catch (Exception ex) { erro = ex.Message; }
+        finally { ocupado = false; }
+    }
+}

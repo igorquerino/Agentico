@@ -1,0 +1,48 @@
+@inherits LayoutComponentBase
+@inject FonteDeDados Fonte
+@implements IDisposable
+
+<div class="app">
+    <aside class="rail" aria-label="Cargos">
+        <div class="rail-logo" title="Blue OS">B</div>
+        <nav>
+            <a class="rail-item ativo" href="" title="Gestor de Tráfego"><span class="ic">&#9654;</span><span>Tráfego</span></a>
+            <span class="rail-item desativado" title="Em breve: tela do CS"><span class="ic">&#9679;</span><span>CS</span></span>
+            <span class="rail-item desativado" title="Em breve: tela do Designer"><span class="ic">&#9679;</span><span>Designer</span></span>
+            <span class="rail-item desativado" title="Em breve: tela do SEO"><span class="ic">&#9679;</span><span>SEO</span></span>
+            <span class="rail-item desativado" title="Em breve: administração"><span class="ic">&#9679;</span><span>Admin</span></span>
+        </nav>
+        <div class="rail-rodape" title="Desktop (MAUI Blazor Hybrid)">desktop</div>
+    </aside>
+    <div class="main">
+        <header class="topo">
+            <div class="topo-titulo"><strong>Blue OS</strong><span class="sep">&middot;</span>Gestor de Tráfego<span class="sep">&middot;</span><span class="text-3">cargo: gestor de tráfego</span></div>
+            <div class="topo-direita">
+                <span class="pilula @(Fonte.Atual.EhDemo ? "pilula-warn" : "pilula-ok")" title="De onde os dados vêm">@Fonte.Atual.Origem</span>
+                <button type="button" class="btn btn-ghost" @onclick="() => mostrarFonte = true">Fonte de dados</button>
+            </div>
+        </header>
+        <main class="conteudo">
+            @Body
+        </main>
+    </div>
+</div>
+
+@if (mostrarFonte)
+{
+    <ModalFonte Fechar="() => mostrarFonte = false" />
+}
+
+<div id="blazor-error-ui" data-nosnippet>
+    Aconteceu um erro inesperado na tela.
+    <a href="." class="reload">Recarregar</a>
+    <span class="dismiss">&#10006;</span>
+</div>
+
+@code {
+    bool mostrarFonte;
+
+    protected override void OnInitialized() => Fonte.Mudou += Atualizar;
+    void Atualizar() => InvokeAsync(StateHasChanged);
+    public void Dispose() => Fonte.Mudou -= Atualizar;
+}

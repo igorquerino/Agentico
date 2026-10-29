@@ -1,0 +1,236 @@
+@* Ongoing: o agente lê a conta pela API da Meta, decide pelas regras e o gestor valida. *@
+<div class="caixa barra-modo">
+    <div>
+        <strong>Modo do motor neste cliente</strong>
+        <div class="modos">
+            @foreach (var m in new[] { ModoDeExecucao.Recomenda, ModoDeExecucao.Sombra, ModoDeExecucao.Executa })
+            {
+                <button type="button" class="chip @(Cliente.Modo == m ? "ativo" : "")" @onclick="() => MudarModo(m)" title="@Frase(m)">@m</button>
+            }
+        </div>
+        <p class="text-3 mini">@Frase(Cliente.Modo)</p>
+    </div>
+    <div>
+        <strong>Chave geral</strong>
+        <div class="acoes">
+            <span class="pilula @(chaveLigada ? "pilula-ok" : "pilula-err")">@(chaveLigada ? "ligada" : "desligada: " + motivoDaChave)</span>
+            @if (chaveLigada) { <input class="curto" @bind="motivoDesligar" placeholder="motivo para desligar" /> }
+            <button type="button" class="btn btn-ghost btn-mini" @onclick="AlternarChave">@(chaveLigada ? "Desligar" : "Ligar")</button>
+        </div>
+        <p class="text-3 mini">Desligada, nenhum caminho do motor escreve na Meta: nem o cron, nem o aceite na aba.</p>
+    </div>
+    <div class="acoes-direita">
+        <button type="button" class="btn btn-destaque" @onclick="Rodar" disabled="@ocupado">@(ocupado ? "Lendo…" : "Rodar o motor agora")</button>
+        @if (Api.PodeSimularVeiculacao)
+        {
+            <button type="button" class="btn btn-ghost" @onclick="Simular" disabled="@ocupado" title="Demonstração: ativa a campanha e gera 12 dias de insights e leads">Simular 12 dias de veiculação</button>
+        }
+        <span class="text-3 mini">@(Cliente.UltimaRodada is null ? "o motor ainda não rodou aqui" : $"última rodada {Cliente.UltimaRodada:dd/MM HH:mm}") &middot; no V1 o cron roda depois da carga diária (07:30 UTC)</span>
+    </div>
+</div>
+
+@if (erro is not null) { <p class="erro" role="alert">@erro</p> }
+
+@if (ongoing is { } o)
+{
+    <div class="kpis">
+        <div class="kpi"><span class="rot">Gasto do mês</span><strong>@Dinheiro.ReaisCurto(o.Kpis.GastoCentavos)</strong><span class="text-3 mini">@(o.Kpis.BudgetCentavos is null ? "sem budget" : $"de {Dinheiro.ReaisCurto(o.Kpis.BudgetCentavos.Value)} · {Dinheiro.Pct((double)o.Kpis.GastoCentavos / o.Kpis.BudgetCentavos.Value)}")@(o.Kpis.DiasLidos < o.Kpis.DiasDoMes ? $" · parcial: a carga leu {o.Kpis.DiasLidos} de {o.Kpis.DiasDoMes} dias" : "")</span></div>
+        <div class="kpi"><span class="rot">MQL do mês</span><strong>@o.Kpis.Mql</strong><span class="text-3 mini">@(o.Kpis.MetaMql is null ? "sem meta (budget ÷ teto)" : $"meta {o.Kpis.MetaMql}") &middot; A @o.Kpis.MqlA · B @o.Kpis.MqlB · C @o.Kpis.MqlC</span></div>
+        <div class="kpi"><span class="rot">R$ por MQL</span><strong>@(o.Kpis.CustoPorMqlCentavos is null ? "—" : Dinheiro.ReaisCurto(o.Kpis.CustoPorMqlCentavos.Value))</strong><span class="text-3 mini">@(o.Kpis.TetoCentavos is null ? "sem teto no PPL" : $"teto {Dinheiro.ReaisCurto(o.Kpis.TetoCentavos.Value)}")</span></div>
+        <div class="kpi"><span class="rot">Leads</span><strong>@o.Kpis.Leads</strong><span class="text-3 mini">@o.Kpis.Avaliados avaliados · @o.Kpis.NaoMql não MQL · @o.Kpis.Pendentes pendentes</span></div>
+    </div>
+    @if (o.SemRegua) { <p class="warn">Sem régua de MQL: os leads aparecem sem tier e o KPI de MQL fica em branco.</p> }
+    @if (o.AlertaBudget is { } ab) { <p class="warn"><strong>alerta_budget:</strong> @ab.Texto</p> }
+}
+
+@if (rodada is { } rd)
+{
+    <p class="mini text-2">Rodada: @rd.Avaliados.Count conjunto(s) lido(s), @rd.Gravadas recomendação(ões) nova(s), @rd.Repetidas repetida(s)@(rd.Executadas.Count > 0 ? $", {rd.Executadas.Count} executada(s) sozinho" : "")@(rd.NaoAgiu.Count > 0 ? $". Não agiu: {string.Join(", ", rd.NaoAgiu.Select(Silencio))}" : "").</p>
+}
+
+<h3>Decisões do agente esperando você</h3>
+@{ var pendentes = Cliente.Recomendacoes.Where(r => r.Estado == EstadoDaRecomendacao.Pendente).ToList(); }
+@if (pendentes.Count == 0) { <p class="text-3">Nenhuma recomendação pendente.</p> }
+<div class="grade-recs">
+    @foreach (var r in pendentes) { @Rec(r) }
+</div>
+
+@if (rodada is { } rd2 && rd2.Avaliados.Count > 0)
+{
+    <details class="detalhes">
+        <summary>Todos os conjuntos lidos nesta rodada (@rd2.Avaliados.Count)</summary>
+        <table class="tabela compacta">
+            <thead><tr><th>Conjunto</th><th>Ação</th><th>Chaves que dispararam</th><th>Trilha</th></tr></thead>
+            <tbody>
+                @foreach (var (id, nome, d) in rd2.Avaliados)
+                {
+                    <tr><td>@nome</td><td><strong>@Arvore.RotuloDaAcao(d.Acao).Rotulo</strong></td><td class="mini">@string.Join(", ", d.Chaves)</td><td class="mini text-3">@string.Join(" ", d.Trilha.Where(t => t.Resultado != ResultadoDaRegra.Passou).Select(t => t.Texto))</td></tr>
+                }
+            </tbody>
+        </table>
+    </details>
+}
+
+<div class="grade-2 mt">
+    <div class="caixa">
+        <h3>Conjuntos em veiculação</h3>
+        <table class="tabela compacta">
+            <thead><tr><th>Conjunto</th><th>Status</th><th>R$/dia</th><th>Gasto (vida)</th><th>Dias</th><th>Leads</th></tr></thead>
+            <tbody>
+                @foreach (var cj in Cliente.Conjuntos)
+                {
+                    <tr><td>@cj.Nome @(cj.CopiaDoMotor ? "(cópia do motor)" : "")</td><td><span class="pilula @(cj.Ativo == true ? "pilula-ok" : "pilula-warn")">@(cj.Ativo == true ? "ACTIVE" : cj.Ativo == false ? "PAUSED" : "não lido")</span></td><td>@Dinheiro.ReaisCurto(cj.DiarioCentavos)</td><td>@Dinheiro.ReaisCurto(cj.GastoVidaCentavos)</td><td>@cj.DiasEntrega</td><td>@cj.Leads.Count (@cj.Leads.Count(l => l.Situacao == Situacao.Mql) MQL)</td></tr>
+                }
+            </tbody>
+        </table>
+        @if (Cliente.Conjuntos.Count == 0) { <p class="text-3 mini">Nenhum conjunto lido pela carga ainda.</p> }
+    </div>
+    <div class="caixa">
+        <h3>O que o agente fez</h3>
+        <ul class="linha-do-tempo">
+            @foreach (var a in (ongoing?.Acoes ?? Cliente.Acoes.Take(40).ToList()))
+            {
+                <li><span class="text-3 mini">@a.Quando.ToString("dd/MM HH:mm")</span> <span>@a.Texto</span> <span class="text-3 mini">@a.Estado@(a.Por is null ? "" : $" · {a.Por}")@(a.Motivo is null ? "" : $" · {a.Motivo}")</span></li>
+            }
+        </ul>
+        @if ((ongoing?.Acoes.Count ?? Cliente.Acoes.Count) == 0) { <p class="text-3 mini">Nada registrado ainda.</p> }
+    </div>
+</div>
+
+@if (ongoing is { } og && og.Leads.Count > 0)
+{
+    <details class="detalhes mt">
+        <summary>Central de leads (@og.Leads.Count nos últimos 30 dias)</summary>
+        <table class="tabela compacta">
+            <thead><tr><th>Quando</th><th>Conjunto</th><th>Situação</th><th>Tier</th><th>Motivo</th></tr></thead>
+            <tbody>
+                @foreach (var l in og.Leads)
+                {
+                    <tr><td class="mini">@l.CriadoEm.ToString("dd/MM HH:mm")</td><td class="mini">@l.Conjunto</td><td><span class="pilula @(l.Situacao == Situacao.Mql ? "pilula-ok" : l.Situacao == Situacao.Pendente ? "pilula-warn" : "")">@(l.Situacao?.ToString().ToLowerInvariant() ?? "sem régua")</span></td><td>@l.Tier</td><td class="mini text-3">@l.Motivo</td></tr>
+                }
+            </tbody>
+        </table>
+    </details>
+}
+
+@{ var decididas = Cliente.Recomendacoes.Where(r => r.Estado != EstadoDaRecomendacao.Pendente).Take(12).ToList(); }
+@if (decididas.Count > 0)
+{
+    <details class="detalhes mt">
+        <summary>Recomendações já decididas (@decididas.Count)</summary>
+        <div class="grade-recs">@foreach (var r in decididas) { @Rec(r) }</div>
+    </details>
+}
+
+@code {
+    [Parameter] public required Cliente Cliente { get; set; }
+    [Parameter] public required IBlueApi Api { get; set; }
+
+    Ongoing? ongoing; RodadaDoMotor? rodada;
+    string? erro; bool ocupado; bool chaveLigada = true; string? motivoDaChave; string motivoDesligar = "";
+    Dictionary<string, string> motivos = new();
+    HashSet<string> abertas = new();
+    Cliente? visto;
+
+    static string Frase(ModoDeExecucao m) => m switch
+    {
+        ModoDeExecucao.Recomenda => "o motor recomenda e você aceita ou nega aqui. Nada escreve sozinho.",
+        ModoDeExecucao.Sombra => "o motor roda sozinho e registra o que TERIA feito, sem escrever na Meta. É o ensaio antes de ligar.",
+        _ => "o motor escreve na Meta sozinho, pelas travas do executor. Ativar conjunto pausado continua sendo seu.",
+    };
+
+    static string Silencio(string s) => s switch
+    {
+        "sem_regua_ou_teto" => "este cliente ainda não tem régua de MQL e teto por MQL (card do cliente, Critério de MQL)",
+        "sem_conjunto_com_entrega" => "nenhum conjunto teve entrega na janela: não há o que ler ainda",
+        _ => s,
+    };
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (ReferenceEquals(visto, Cliente)) return;
+        visto = Cliente; rodada = null; ongoing = null;
+        await Ler();
+    }
+
+    async Task Ler()
+    {
+        try
+        {
+            ongoing = await Api.LerOngoingAsync(Cliente);
+            (chaveLigada, motivoDaChave) = await Api.ChaveGeralAsync();
+        }
+        catch (Exception ex) { erro = ex.Message; }
+    }
+
+    async Task Rodar()
+    {
+        erro = null; ocupado = true;
+        try { rodada = await Api.RodarMotorAsync(Cliente); await Ler(); }
+        catch (Exception ex) { erro = ex.Message; }
+        finally { ocupado = false; }
+    }
+
+    async Task Simular()
+    {
+        erro = null; ocupado = true;
+        try { await Api.SimularVeiculacaoAsync(Cliente, 12); await Ler(); }
+        catch (Exception ex) { erro = ex.Message; }
+        finally { ocupado = false; }
+    }
+
+    async Task Decidir(Recomendacao r, bool aceita)
+    {
+        erro = null; ocupado = true;
+        try { await Api.DecidirAsync(Cliente, r.Id, aceita, motivos.GetValueOrDefault(r.Id)); await Ler(); }
+        catch (Exception ex) { erro = ex.Message; }
+        finally { ocupado = false; }
+    }
+
+    async Task MudarModo(ModoDeExecucao m) { erro = null; try { await Api.MudarModoAsync(Cliente, m); } catch (Exception ex) { erro = ex.Message; } }
+
+    async Task AlternarChave()
+    {
+        erro = null;
+        try { await Api.MudarChaveGeralAsync(!chaveLigada, motivoDesligar); motivoDesligar = ""; await Ler(); }
+        catch (Exception ex) { erro = ex.Message; }
+    }
+
+    RenderFragment Rec(Recomendacao r) => __builder =>
+    {
+        var (rotulo, frase) = Arvore.RotuloDaAcao(r.Acao);
+        var n = r.Decisao.Numeros;
+        <article class="rec rec-@r.Acao.ToString().ToLowerInvariant() @(r.Estado != EstadoDaRecomendacao.Pendente ? "decidida" : "")">
+            <header>
+                <div><strong>@rotulo</strong> <span class="text-3">@frase</span></div>
+                <span class="pilula">@r.Estado.ToString().ToLowerInvariant()</span>
+            </header>
+            <div class="mini"><strong>@r.Nome</strong> <span class="text-3">· conjunto @r.MetaId · vault @r.VaultSha · contagem: @r.ContagemMql · texto: @r.TextoFonte</span></div>
+            <p>@r.Texto</p>
+            <div class="numeros mini text-2">ponderado @n.Ponderado.ToString("0.0") · taxa @Dinheiro.Pct(n.Taxa) · @(n.CustoCentavos is null ? "sem custo por MQL" : Dinheiro.ReaisCurto(n.CustoCentavos.Value) + " por MQL") · @(n.Multiplo is null ? "" : Dinheiro.Vezes(n.Multiplo.Value) + " o teto")@(r.Decisao.TemCopia ? $" · cópia {(r.Decisao.CopiaDiarioCentavos is null ? "sem verba própria (CBO)" : Dinheiro.ReaisCurto(r.Decisao.CopiaDiarioCentavos.Value) + "/dia")}" : "")</div>
+            @foreach (var av in r.Decisao.Avisos) { <p class="warn mini">@av.Ref: @av.Texto</p> }
+            @if (r.Decisao.Trilha.Count > 0)
+            {
+                <button type="button" class="btn btn-ghost btn-mini" @onclick="() => { if (!abertas.Add(r.Id)) abertas.Remove(r.Id); }">@(abertas.Contains(r.Id) ? "esconder a trilha" : "ver a trilha")</button>
+                @if (abertas.Contains(r.Id))
+                {
+                    <ol class="trilha">
+                        @foreach (var t in r.Decisao.Trilha) { <li class="@t.Resultado.ToString().ToLowerInvariant()"><code>@t.Chave</code> <span class="text-3">@t.Resultado.ToString().ToLowerInvariant()</span> @t.Texto</li> }
+                    </ol>
+                }
+            }
+            @if (r.Estado == EstadoDaRecomendacao.Pendente)
+            {
+                <div class="acoes">
+                    <button type="button" class="btn btn-destaque btn-mini" @onclick="() => Decidir(r, true)" disabled="@ocupado">Aceitar @(Arvore.Escreve(r.Acao) ? "e aplicar na Meta" : "")</button>
+                    <input class="curto" placeholder="motivo para negar" @bind="motivos[r.Id]" />
+                    <button type="button" class="btn btn-ghost btn-mini" @onclick="() => Decidir(r, false)" disabled="@ocupado">Negar</button>
+                </div>
+            }
+            else
+            {
+                <div class="text-3 mini">@r.Estado.ToString().ToLowerInvariant() por @r.DecididaPor em @r.DecididaEm?.ToString("dd/MM HH:mm")@(r.Motivo is null ? "" : $" · {r.Motivo}")@(r.ResultadoMeta is null ? "" : $" · {r.ResultadoMeta}")</div>
+            }
+        </article>
+    };
+}

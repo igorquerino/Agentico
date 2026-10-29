@@ -1,0 +1,59 @@
+@inject FonteDeDados Fonte
+
+<div class="modal-fundo" @onclick="() => Fechar.InvokeAsync()">
+    <div class="modal" @onclick:stopPropagation="true" role="dialog" aria-label="Fonte de dados">
+        <h2>Fonte de dados</h2>
+        <p class="text-2">O desktop lê a API que existir: hoje, as rotas do V1 pela sua sessão. Sem V1 no ar, a demonstração roda o fluxo inteiro em memória com as mesmas regras do motor.</p>
+        <label class="opcao"><input type="radio" name="fonte" checked="@(modo == "demo")" @onchange='() => modo = "demo"' /> <strong>Demonstração</strong> <span class="text-3">dados em memória, Meta simulada, agentes sem chave de API</span></label>
+        <label class="opcao"><input type="radio" name="fonte" checked="@(modo == "v1")" @onchange='() => modo = "v1"' /> <strong>Blue OS V1</strong> <span class="text-3">login pelo /api/os/login, cookie de sessão, rotas /api/trafego/*</span></label>
+        @if (modo == "v1")
+        {
+            <div class="grade-2">
+                <label>Endereço do V1<input @bind="url" placeholder="http://localhost:3080" /></label>
+                <label>Usuário ou e-mail<input @bind="login" /></label>
+                <label>Senha<input type="password" @bind="senha" /></label>
+            </div>
+            <p class="text-3 mini">A senha nunca é gravada: só a sessão fica na memória do app. O endereço e o login ficam em %LocalAppData%\BlueOS\fonte.json.</p>
+        }
+        @if (erro is not null) { <p class="erro" role="alert">@erro</p> }
+        <div class="acoes">
+            <button type="button" class="btn btn-ghost" @onclick="() => Fechar.InvokeAsync()">Cancelar</button>
+            <button type="button" class="btn btn-destaque" disabled="@ocupado" @onclick="Aplicar">@(ocupado ? "Conectando…" : modo == "v1" ? "Entrar no V1" : "Usar a demonstração")</button>
+        </div>
+    </div>
+</div>
+
+@code {
+    [Parameter] public EventCallback Fechar { get; set; }
+    string modo = "demo";
+    string url = "http://localhost:3080";
+    string login = "";
+    string senha = "";
+    string? erro;
+    bool ocupado;
+
+    protected override void OnInitialized()
+    {
+        modo = Fonte.Atual.EhDemo ? "demo" : "v1";
+        url = Fonte.Config.BaseUrlV1;
+        login = Fonte.Config.UltimoLogin ?? "";
+    }
+
+    async Task Aplicar()
+    {
+        erro = null;
+        ocupado = true;
+        try
+        {
+            if (modo == "demo") Fonte.UsarDemo();
+            else
+            {
+                if (string.IsNullOrWhiteSpace(login) || string.IsNullOrWhiteSpace(senha)) { erro = "Informe usuário e senha."; return; }
+                await Fonte.UsarV1Async(url.Trim(), login.Trim(), senha);
+            }
+            await Fechar.InvokeAsync();
+        }
+        catch (Exception e) { erro = e.Message; }
+        finally { ocupado = false; }
+    }
+}

@@ -1,0 +1,132 @@
+@* O agente de tráfego escreve a copy por nicho, nas etapas que a faixa do budget pede. *@
+@{
+    var etapas = Estagios.EtapasExigidas(Cliente, Api.Parametros);
+    var faixa = Cliente.BudgetMensal is > 0 ? Faixa.DoBudget(Dinheiro.CentavosDe(Cliente.BudgetMensal.Value), Api.Parametros.Faixas) : (FaixaId?)null;
+}
+<div class="grade-2">
+    <div class="caixa">
+        <h3>Nicho e etapas</h3>
+        <p class="mini">
+            <span class="pilula">@(Cliente.NichoSlug is null ? "sem nicho" : Nichos.Rotulo(Cliente.NichoSlug))</span>
+            <span class="pilula">@(faixa is null ? "sem budget" : Faixa.Rotulo(faixa.Value, Api.Parametros.Faixas))</span>
+            <span class="pilula">etapas: @string.Join(" + ", etapas)</span>
+        </p>
+        <p class="text-3 mini">A orientação do nicho (ordem das estruturas, sem número) vem do vault @Api.Parametros.VaultSha. Estado: <strong>@OrientacaoDoNicho.Estado(Cliente.NichoSlug)</strong>. Estático só em MOFU e BOFU; TOFU exige storytelling, então sai como vídeo (R2).</p>
+        <table class="tabela compacta">
+            <thead><tr><th>Etapa</th><th>Headline</th><th>Sub</th><th>CTA</th><th>Evitar</th></tr></thead>
+            <tbody>
+                @foreach (var et in etapas)
+                {
+                    var o = OrientacaoDoNicho.Para(Cliente.NichoSlug, et);
+                    <tr><td><strong>@et</strong></td><td>@string.Join(" > ", o.Headline.Select(Estruturas.Legivel))</td><td>@string.Join(" > ", o.Sub.Select(Estruturas.Legivel))</td><td>@string.Join(" > ", o.Cta.Select(Estruturas.Legivel))</td><td class="text-3">@string.Join(", ", o.Evitar.Select(Estruturas.Legivel))</td></tr>
+                }
+            </tbody>
+        </table>
+    </div>
+    <div class="caixa">
+        <h3>Pedido</h3>
+        @foreach (var et in etapas)
+        {
+            <label class="linha-pedido"><span>@et <span class="text-3">(@(Estruturas.TipoDaEtapa(et) == TipoPeca.Video ? "vídeo" : "estático"))</span></span><input type="number" min="0" max="15" @bind="quantidades[et]" /> <span class="text-3 mini">peças</span></label>
+        }
+        <label>Briefing do gestor (opcional, até 4.000 caracteres)<textarea @bind="briefing" placeholder="Direção: qual ICP e qual dor perseguir. Não é fonte de fato."></textarea></label>
+        <div class="acoes">
+            <button type="button" class="btn btn-destaque" @onclick="Gerar" disabled="@(ocupado || quantidades.Values.Sum() == 0)">@(ocupado ? "Escrevendo…" : "Gerar copy")</button>
+            <span class="text-3 mini">teto: 15 por etapa, 30 por lote</span>
+        </div>
+    </div>
+</div>
+
+@if (erro is not null) { <p class="erro" role="alert">@erro</p> }
+
+@foreach (var lote in Cliente.Lotes)
+{
+    <div class="lote">
+        <header class="lote-cab">
+            <strong>Lote @lote.Numero</strong>
+            <span class="text-3 mini">@lote.CriadoEm.ToString("dd/MM HH:mm") &middot; @lote.Modelo &middot; vault @lote.VaultSha &middot; @lote.Pecas.Count(p => p.Aprovada) de @lote.Pecas.Count aprovadas</span>
+        </header>
+        <div class="grade-pecas">
+            @foreach (var p in lote.Pecas)
+            {
+                <article class="peca @(p.Aprovada ? "aprovada" : "") @(!p.CrivoOk ? "reprovada" : "")">
+                    <header>
+                        <span class="pilula pilula-etapa">@p.Etapa</span>
+                        <span class="text-3 mini">@p.RotuloDoTipo &middot; peça @p.Numero &middot; v@p.Versao</span>
+                        <span class="pilula @(p.CrivoOk ? "pilula-ok" : "pilula-err")" title="@(p.MotivoDoCrivo ?? "passou no crivo")">@(p.CrivoOk ? "crivo ok" : "reprovada")</span>
+                    </header>
+                    <div class="peca-texto">
+                        <div class="rot">@p.RotuloAbertura</div><div class="head">@p.Headline</div>
+                        <div class="rot">@p.RotuloFecho</div><div class="sub">@p.Sub</div>
+                        <div class="rot">CTA</div><div class="cta">@p.Cta</div>
+                    </div>
+                    <div class="etiqueta text-3 mini">@Estruturas.Legivel(p.AnguloHeadline) &middot; @Estruturas.Legivel(p.PapelSub) &middot; @Estruturas.Legivel(p.TipoCta)@(p.FormasHeadline.Count > 0 ? " · " + string.Join(", ", p.FormasHeadline.Select(Estruturas.Legivel)) : "")</div>
+                    <div class="text-3 mini">hipótese: @p.Hipotese</div>
+                    @if (!p.CrivoOk) { <div class="warn mini">@p.MotivoDoCrivo</div> }
+                    @if (p.Regeneracoes.Count > 0) { <div class="text-3 mini">regerada 1x: @p.Regeneracoes[0]</div> }
+                    <div class="acoes">
+                        <button type="button" class="btn btn-mini @(p.Aprovada ? "btn-ghost" : "btn-destaque")" @onclick="() => Aprovar(p, !p.Aprovada)" disabled="@(ocupado || !p.CrivoOk)">@(p.Aprovada ? "Desaprovar" : "Aprovar")</button>
+                        <button type="button" class="btn btn-ghost btn-mini" @onclick="() => ajustando = ajustando == p.Id ? null : p.Id">Ajustar</button>
+                    </div>
+                    @if (ajustando == p.Id)
+                    {
+                        <div class="ajuste">
+                            <input @bind="instrucao" placeholder="o que mudar (ex.: CTA mais curto, headline mais curta)" />
+                            <button type="button" class="btn btn-destaque btn-mini" @onclick="() => Ajustar(p)" disabled="@ocupado">Aplicar</button>
+                        </div>
+                    }
+                </article>
+            }
+        </div>
+    </div>
+}
+
+<footer class="etapa-rodape">
+    @{ var (ok, pend) = Estagios.CopyPronta(Cliente, Api.Parametros); }
+    @if (ok) { <span class="ok">Copy aprovada para @string.Join(" + ", etapas).</span> } else { <span class="warn">Falta: @string.Join(", ", pend).</span> }
+    <button type="button" class="btn btn-destaque" @onclick="() => Avancar.InvokeAsync()">Ir para o design &rarr;</button>
+</footer>
+
+@code {
+    [Parameter] public required Cliente Cliente { get; set; }
+    [Parameter] public required IBlueApi Api { get; set; }
+    [Parameter] public EventCallback Avancar { get; set; }
+
+    Dictionary<Etapa, int> quantidades = new();
+    string briefing = "";
+    string? erro; bool ocupado; string? ajustando; string instrucao = "";
+    Cliente? visto;
+
+    protected override void OnParametersSet()
+    {
+        if (ReferenceEquals(visto, Cliente)) return;
+        visto = Cliente;
+        quantidades = Estagios.EtapasExigidas(Cliente, Api.Parametros).ToDictionary(e => e, _ => 3);
+    }
+
+    async Task Gerar()
+    {
+        erro = null; ocupado = true;
+        try
+        {
+            var pedido = quantidades.Where(q => q.Value > 0).Select(q => new GeradorDemo.Pedido(q.Key, Estruturas.TipoDaEtapa(q.Key), q.Value)).ToList();
+            await Api.GerarCopyAsync(Cliente, pedido, string.IsNullOrWhiteSpace(briefing) ? null : briefing.Trim());
+        }
+        catch (Exception ex) { erro = ex.Message; }
+        finally { ocupado = false; }
+    }
+
+    async Task Aprovar(PecaDeCopy p, bool aprovada)
+    {
+        erro = null;
+        try { await Api.AprovarPecaAsync(Cliente, p.Id, aprovada); } catch (Exception ex) { erro = ex.Message; }
+    }
+
+    async Task Ajustar(PecaDeCopy p)
+    {
+        erro = null; ocupado = true;
+        try { await Api.AjustarPecaAsync(Cliente, p.Id, instrucao); ajustando = null; instrucao = ""; }
+        catch (Exception ex) { erro = ex.Message; }
+        finally { ocupado = false; }
+    }
+}

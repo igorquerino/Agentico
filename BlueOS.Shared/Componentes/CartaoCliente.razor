@@ -1,0 +1,52 @@
+@* O card do cliente na carteira: de início mostra em que estágio ele se encontra. *@
+<article class="cartao @("estagio-" + (int)Estagio)" @onclick="() => Abrir.InvokeAsync(Cliente)" tabindex="0" @onkeydown="TeclaAbrir" aria-label="@($"{Cliente.Nome}: {Estagios.Descricao(Estagio).Titulo}")">
+    <header>
+        <div class="cartao-logo">
+            @if (Cliente.Assets.FirstOrDefault(a => a.Tipo == TipoDeAsset.LogoPrincipal && a.Url is not null) is { } logo)
+            {
+                <img src="@logo.Url" alt="" />
+            }
+            else
+            {
+                <span>@Iniciais(Cliente.Nome)</span>
+            }
+        </div>
+        <div class="cartao-nome">
+            <h3>@Cliente.Nome</h3>
+            <div class="text-3 mini">@Cliente.Squad &middot; @Cliente.Status.Replace('_', ' ') &middot; desde @Cliente.Desde.ToString("dd/MM")</div>
+        </div>
+        <span class="pilula pilula-estagio">@Estagios.Descricao(Estagio).Curto</span>
+    </header>
+    <div class="cartao-linha">
+        <span class="pilula @(Cliente.NichoSlug is null ? "pilula-warn" : "")">@(Cliente.NichoSlug is null ? "sem nicho" : Nichos.Rotulo(Cliente.NichoSlug).ToLowerInvariant())</span>
+        <span class="pilula @(Cliente.BudgetMensal is null ? "pilula-warn" : "")">@(Cliente.BudgetMensal is null ? "sem budget" : Dinheiro.ReaisCurto(Dinheiro.CentavosDe(Cliente.BudgetMensal.Value)) + " por mês")</span>
+        <span class="pilula @(Cliente.ContaConectada ? "pilula-ok" : "pilula-err")">@(Cliente.ContaConectada ? "conta conectada" : "sem conta de anúncios")</span>
+    </div>
+    <ol class="mini-stepper" aria-hidden="true">
+        @foreach (var d in Estagios.Lista)
+        {
+            <li class="@(d.Estagio < Estagio ? "feita" : d.Estagio == Estagio ? "atual" : "")" title="@d.Curto"></li>
+        }
+    </ol>
+    <footer>
+        @if (Estagio == Estagio.Automacao)
+        {
+            var pend = Cliente.Recomendacoes.Count(r => r.Estado == EstadoDaRecomendacao.Pendente);
+            <span class="@(pend > 0 ? "warn" : "ok")">@(pend > 0 ? $"{pend} decisão(ões) do agente esperando você" : "em automação contínua: nada esperando você")</span>
+        }
+        else
+        {
+            <span class="text-2">falta: @string.Join(", ", Pendencias.Take(3))@(Pendencias.Count > 3 ? $" e mais {Pendencias.Count - 3}" : "")</span>
+        }
+    </footer>
+</article>
+
+@code {
+    [Parameter] public required Cliente Cliente { get; set; }
+    [Parameter] public Estagio Estagio { get; set; }
+    [Parameter] public List<string> Pendencias { get; set; } = new();
+    [Parameter] public EventCallback<Cliente> Abrir { get; set; }
+
+    static string Iniciais(string nome) => string.Concat(nome.Split(' ', StringSplitOptions.RemoveEmptyEntries).Take(2).Select(p => char.ToUpperInvariant(p[0])));
+    Task TeclaAbrir(KeyboardEventArgs e) => e.Key is "Enter" or " " ? Abrir.InvokeAsync(Cliente) : Task.CompletedTask;
+}

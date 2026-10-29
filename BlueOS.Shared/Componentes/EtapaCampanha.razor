@@ -1,0 +1,137 @@
+@* O Start: a estrutura calculada pelo budget e pelo nicho, com os nomes da Meta, publicada pausada. *@
+@if (Cliente.Publicacao is { Estado: "ok" } pub)
+{
+    <div class="caixa">
+        <h3>Campanha publicada @(pub.Simulado ? "(Meta simulada)" : "") &middot; @pub.Em.ToString("dd/MM HH:mm")</h3>
+        <p><strong>@pub.NomeDaCampanha</strong></p>
+        <p class="mini text-2">campanha @pub.CampanhaId &middot; formulário @pub.FormularioId &middot; @pub.Conjuntos.Count conjuntos &middot; @pub.Anuncios.Count anúncios &middot; <span class="pilula pilula-warn">tudo nasceu PAUSED</span></p>
+        @if (pub.Link is not null) { <p><a href="@pub.Link" target="_blank" rel="noopener">Abrir no Gerenciador &nearr;</a></p> }
+        <table class="tabela compacta">
+            <thead><tr><th>Conjunto</th><th>Etapa</th><th>Público</th><th>R$/dia</th><th>adset_id</th></tr></thead>
+            <tbody>@foreach (var cj in pub.Conjuntos) { <tr><td>@cj.Nome</td><td>@cj.Etapa</td><td>@Estrutura.RotuloDoPublico(cj.Publico).Curto</td><td>@Dinheiro.ReaisCurto(cj.DiarioCentavos)</td><td class="text-3 mini">@cj.AdsetId</td></tr> }</tbody>
+        </table>
+        @foreach (var av in pub.Avisos) { <p class="warn mini">@av</p> }
+        <div class="acoes">
+            <button type="button" class="btn btn-destaque" @onclick="() => Avancar.InvokeAsync()">Ir para a automação &rarr;</button>
+        </div>
+    </div>
+}
+else
+{
+    <div class="passo"><span class="num">1</span><div><h3>Start</h3><p class="text-2">O agente lê nicho e budget do card Tráfego. A conta de anúncios já está vinculada.</p></div></div>
+    <div class="caixa">
+        <div class="acoes">
+            <span class="pilula @(Cliente.NichoSlug is null ? "pilula-warn" : "")">@(Cliente.NichoSlug is null ? "sem nicho" : Nichos.Rotulo(Cliente.NichoSlug).ToLowerInvariant())</span>
+            <span class="pilula @(Cliente.BudgetMensal is null ? "pilula-warn" : "")">@(Cliente.BudgetMensal is null ? "sem budget" : Dinheiro.ReaisCurto(Dinheiro.CentavosDe(Cliente.BudgetMensal.Value)) + " por mês")</span>
+            <span class="pilula @(Cliente.ContaConectada ? "pilula-ok" : "pilula-err")">@(Cliente.ContaConectada ? "conta conectada" : "sem conta de anúncios")</span>
+            <span class="pilula">@(Cliente.Conta.TemLista ? "com lista" : "sem lista") &middot; @(Cliente.Conta.TemSiteOuTag ? "com site/tag" : "sem site/tag")</span>
+        </div>
+        <button type="button" class="btn btn-destaque btn-grande" @onclick="Start" disabled="@(ocupado || Cliente.BudgetMensal is null)">&#9654; Start</button>
+    </div>
+
+    @if (estrutura is { } e)
+    {
+        <div class="passo"><span class="num">2</span><div><h3>A estrutura aparece pronta</h3><p class="text-2">Calculada pelo budget e pelo nicho, já com os nomes que vão para a Meta (vault @e.VaultSha).</p></div></div>
+        <div class="caixa">
+            <div class="kpis">
+                <div class="kpi"><span class="rot">Faixa</span><strong>@e.FaixaRotulo</strong><span class="text-3 mini">@e.Rotulo</span></div>
+                <div class="kpi"><span class="rot">Budget do mês</span><strong>@Dinheiro.ReaisCurto(e.BudgetMensalCentavos)</strong><span class="text-3 mini">meta de @Dinheiro.ReaisCurto(e.DiarioCentavos) por dia</span></div>
+                <div class="kpi"><span class="rot">Alocado por dia</span><strong>@Dinheiro.ReaisCurto(e.AlocadoDiarioCentavos)</strong><span class="text-3 mini">@(e.PorConjuntoMin is null ? "sem conjunto" : $"de {Dinheiro.ReaisCurto(e.PorConjuntoMin.Value)} a {Dinheiro.ReaisCurto(e.PorConjuntoMax!.Value)} por conjunto")</span></div>
+                <div class="kpi"><span class="rot">MQL esperado</span><strong>@(e.MqlEsperado?.ToString() ?? "—")</strong><span class="text-3 mini">@(e.MqlEsperado is null ? "sem teto por MQL no PPL" : "gasto planejado ÷ teto por MQL")</span></div>
+            </div>
+            <p><strong>Campanha:</strong> @e.NomeDaCampanha</p>
+            <table class="tabela compacta">
+                <thead><tr><th>Conjunto</th><th>Público</th><th>R$/dia</th><th>Idade</th><th>Advantage+</th><th>Nome na Meta</th><th>Anúncio</th></tr></thead>
+                <tbody>
+                    @foreach (var cj in e.Conjuntos)
+                    {
+                        <tr><td><strong>@cj.Rotulo</strong></td><td>@cj.PublicoRotulo</td><td>@Dinheiro.ReaisCurto(cj.DiarioCentavos)</td><td>@cj.Idade.Min–@cj.Idade.Max</td><td>@(cj.AdvantageAudience == 1 ? "ligado" : "desligado")</td><td class="mini">@cj.Nome</td><td class="mini text-3">@cj.Anuncio</td></tr>
+                    }
+                </tbody>
+            </table>
+            @foreach (var res in e.Reservado) { <p class="warn mini"><strong>Reservado @res.Etapa @Dinheiro.ReaisCurto(res.DiarioCentavos)/dia</strong> (@res.Chave): @res.Motivo</p> }
+            @if (e.NaoAlocadoCentavos > 0) { <p class="text-3 mini">Sem destino: @Dinheiro.Reais(e.NaoAlocadoCentavos) por dia (arredondamento e teto de montagem).</p> }
+            @foreach (var av in e.Avisos) { <p class="warn mini">@av</p> }
+            <p class="text-3 mini">Chaves do vault lidas: @string.Join(", ", e.ChavesUsadas).</p>
+        </div>
+
+        <div class="passo"><span class="num">3</span><div><h3>Anúncio: o criativo piloto</h3><p class="text-2">A arte escolhida no Design vai para @(e.Conjuntos.Count == 1 ? "o conjunto" : $"os {e.Conjuntos.Count} conjuntos").</p></div></div>
+        <div class="caixa piloto-caixa">
+            @if (Cliente.ArtePiloto is { } piloto)
+            {
+                <img class="piloto" src="@piloto.Url" alt="@piloto.Titulo" />
+                <div>
+                    <p class="mini">@piloto.Titulo</p>
+                    @if (Cliente.Pecas.FirstOrDefault(p => p.Id == piloto.PecaId) is { } pc)
+                    {
+                        <p class="mini"><strong>@pc.Headline</strong><br />@pc.Sub<br /><em>@pc.Cta</em> &rarr; @Estruturas.CtaParaMeta(pc.TipoCta)</p>
+                    }
+                </div>
+            }
+            else { <p class="warn">Sem criativo piloto: escolha um na etapa Design.</p> }
+        </div>
+
+        <div class="passo"><span class="num">4</span><div><h3>Aplicar e publicar</h3><p class="text-2">Cria tudo na Meta, pausado: a campanha, o formulário da régua, os conjuntos e os anúncios. O sistema confere (validate_only) antes de cada escrita e mostra o link do Gerenciador.</p></div></div>
+        <div class="caixa">
+            <div class="grade-3">
+                <label>URL da política de privacidade<input @bind="politica" placeholder="https://" /></label>
+                <label>Link do anúncio<input @bind="link" placeholder="https://" /></label>
+                <label>Formulário existente (opcional)<input @bind="formularioId" placeholder="id do formulário da página" /></label>
+            </div>
+            <p class="text-3 mini">Formulário da régua: nome, e-mail, telefone e cada pergunta da régua como múltipla escolha, com o nome de campo como chave. É isso que fecha o de-para da contagem de MQL. @(Cliente.Regua is null ? "Este cliente não tem régua: o Publicar vai recusar." : $"{Cliente.Regua.Perguntas.Count} pergunta(s) da régua.")</p>
+            <div class="acoes">
+                <button type="button" class="btn btn-destaque btn-grande" @onclick="Publicar" disabled="@(ocupado || Cliente.ArtePiloto is null)">@(ocupado ? "Publicando…" : "Publicar na Meta (pausado)")</button>
+                <span class="text-3 mini">publicar é de head pra cima; só em produção; idempotente pelo hash da estrutura (@e.Hash)</span>
+            </div>
+            @if (resultado is { } r && !r.Ok) { <p class="erro" role="alert">[@r.Codigo] @r.Motivo</p> }
+        </div>
+    }
+    @if (falta is not null) { <p class="warn" role="status">@falta</p> }
+}
+
+@if (erro is not null) { <p class="erro" role="alert">@erro</p> }
+
+@code {
+    [Parameter] public required Cliente Cliente { get; set; }
+    [Parameter] public required IBlueApi Api { get; set; }
+    [Parameter] public EventCallback Avancar { get; set; }
+
+    EstruturaProposta? estrutura;
+    string? falta; string? erro; bool ocupado;
+    string politica = "", link = "", formularioId = "";
+    ResultadoDaPublicacao? resultado;
+    Cliente? visto;
+
+    protected override void OnParametersSet()
+    {
+        if (ReferenceEquals(visto, Cliente)) return;
+        visto = Cliente; estrutura = null; falta = null; resultado = null;
+        politica = Cliente.Conta.PoliticaUrl ?? ""; link = Cliente.Conta.Link ?? ""; formularioId = Cliente.Conta.FormularioId ?? "";
+    }
+
+    async Task Start()
+    {
+        erro = null; falta = null; estrutura = null; resultado = null; ocupado = true;
+        try
+        {
+            var r = await Api.MontarEstruturaAsync(Cliente);
+            if (r.Ok) estrutura = r.Estrutura; else falta = r.Motivo;
+        }
+        catch (Exception ex) { erro = ex.Message; }
+        finally { ocupado = false; }
+    }
+
+    async Task Publicar()
+    {
+        erro = null; ocupado = true; resultado = null;
+        try
+        {
+            Cliente.Conta.PoliticaUrl = string.IsNullOrWhiteSpace(politica) ? null : politica.Trim();
+            Cliente.Conta.Link = string.IsNullOrWhiteSpace(link) ? null : link.Trim();
+            Cliente.Conta.FormularioId = string.IsNullOrWhiteSpace(formularioId) ? null : formularioId.Trim();
+            resultado = await Api.PublicarAsync(Cliente, new PedidoDePublicacao(Cliente.Conta.PoliticaUrl, Cliente.Conta.Link, Cliente.Conta.FormularioId, null));
+        }
+        catch (Exception ex) { erro = ex.Message; }
+        finally { ocupado = false; }
+    }
+}
