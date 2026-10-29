@@ -152,6 +152,9 @@ input.curto { display: inline-block; width: 240px; margin: 0; padding: 5px 10px;
 .trilha code { background: var(--raise-2); padding: 1px 6px; border-radius: 6px; font-size: 11.5px; }
 .linha-do-tempo { list-style: none; margin: 0; padding: 0; }
 .linha-do-tempo li { padding: 6px 0; border-bottom: 1px solid var(--border); display: flex; flex-direction: column; gap: 1px; font-size: 13px; }
+.carregando { display: flex; align-items: center; gap: 12px; color: var(--text-2); }
+.spinner { width: 18px; height: 18px; border: 2px solid var(--border-2); border-top-color: var(--brand); border-radius: 50%; animation: gira .8s linear infinite; flex: none; }
+@keyframes gira { to { transform: rotate(360deg); } }
 .modal-fundo { position: fixed; inset: 0; background: rgba(0,0,0,.55); display: grid; place-items: center; z-index: 50; }
 .modal { background: var(--raise); border: 1px solid var(--border-2); border-radius: 16px; padding: 22px; width: min(640px, 92vw); }
 .modal h2 { margin-bottom: 8px; }

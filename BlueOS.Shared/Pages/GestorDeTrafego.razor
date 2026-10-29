@@ -69,6 +69,14 @@ else
             <p class="text-2">@Estagios.Descricao(aba).Frase</p>
         </header>
         @if (erro is not null) { <p class="erro" role="alert">@erro</p> }
+        @if (abrindo)
+        {
+            <div class="caixa carregando" role="status">
+                <span class="spinner" aria-hidden="true"></span>
+                Lendo <strong>@sel.Nome</strong> na fonte de dados: ficha, card Tráfego, critério de MQL, assets, modo do motor, peças e recomendações&hellip;
+            </div>
+        }
+        else
         @switch (aba)
         {
             case Estagio.Chegada:
@@ -152,11 +160,21 @@ else
         StateHasChanged();
     });
 
+    bool abrindo;
+
     async Task Abrir(Cliente c)
     {
+        if (abrindo) return;
         erro = null;
+        /* O cliente aparece NA HORA: no V1 a hidratação são sete leituras e, sem isto, o
+           clique parecia morto por 10 s ou mais (e por 5 min com o dev server travado). */
+        sel = c;
+        aba = EstagioDe(c);
+        abrindo = true;
+        StateHasChanged();
         try { sel = await Api.ObterClienteAsync(c.Slug) ?? c; }
-        catch (Exception e) { erro = e.Message; sel = c; }
+        catch (Exception e) { erro = $"não consegui ler o cliente na fonte ({Api.Origem}): {e.Message}"; }
+        finally { abrindo = false; }
         aba = EstagioDe(sel);
     }
 

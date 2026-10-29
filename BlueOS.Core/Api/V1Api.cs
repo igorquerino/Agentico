@@ -85,9 +85,19 @@ public sealed class V1Api : IBlueApi, IDisposable
     static string Erro(JsonElement j, string padrao) =>
         j.ValueKind == JsonValueKind.Object && j.TryGetProperty("error", out var e) && e.ValueKind == JsonValueKind.String ? e.GetString()! : padrao;
 
-    async Task<JsonElement> Get(string rota)
+    /// <summary>Teto de uma LEITURA. O dev server do Next já travou mais de uma vez; sem este teto a tela
+    /// esperava os 320 s do HttpClient (que são para a geração de copy e o Publicar, não para um GET).</summary>
+    const int SegundosDeLeitura = 60;
+
+    async Task<JsonElement> Get(string rota, int segundos = SegundosDeLeitura)
     {
-        var r = await _http.GetAsync(rota);
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(segundos));
+        HttpResponseMessage r;
+        try { r = await _http.GetAsync(rota, cts.Token); }
+        catch (OperationCanceledException)
+        {
+            throw new InvalidOperationException($"o V1 não respondeu em {segundos} s ({rota}). O dev server do Next pode ter travado: reinicie o pnpm dev e tente de novo.");
+        }
         if (r.StatusCode is HttpStatusCode.Redirect or HttpStatusCode.TemporaryRedirect or HttpStatusCode.Unauthorized)
             throw new InvalidOperationException("sem sessão no V1: faça o login de novo.");
         var j = await LerJson(r);
@@ -143,48 +153,58 @@ public sealed class V1Api : IBlueApi, IDisposable
     {
         if (!_cache.ContainsKey(slug)) await ListarClientesAsync();
         if (!_cache.TryGetValue(slug, out var c)) return null;
-        try { await LerDetalheAsync(c); } catch { /* sem detalhe, a ficha fica como está */ }
-        try
+        /* As sete leituras são independentes e vão EM PARALELO: em série, abrir um cliente
+           levava a soma delas (10 s ou mais no dev server). Cada uma falha sozinha, sem
+           derrubar as outras: o que não veio fica como estava e a tela diz o que falta. */
+        var primeiroErro = (string?)null;
+        async Task Seguro(Func<Task> f)
         {
-            var t = await Get($"api/os/clientes/{c.Id}/trafego");
-            c.NichoSlug = S(t, "nicho_slug");
-            c.BudgetMensal = D(t, "budget_mensal");
+            try { await f(); }
+            catch (Exception e) { primeiroErro ??= e.Message; }
         }
-        catch { /* sem cadastro no V1: a tela diz o que falta */ }
-        try
-        {
-            var m = await Get($"api/os/clientes/{c.Id}/mql");
-            c.TetoMql = D(m, "teto_mql");
-            if (m.TryGetProperty("regua", out var rg) && rg.ValueKind == JsonValueKind.Object)
-                c.Regua = JsonSerializer.Deserialize<ReguaV2>(rg.GetRawText(), Json);
-        }
-        catch { }
-        try
-        {
-            var a = await Get($"api/os/clientes/{c.Id}/assets");
-            c.Assets.Clear();
-            foreach (var x in Lista(a, "assets"))
+        await Task.WhenAll(
+            Seguro(() => LerDetalheAsync(c)),
+            Seguro(async () =>
             {
-                var tipo = S(x, "tipo") switch { "logo_principal" => TipoDeAsset.LogoPrincipal, "logo_variacao" => TipoDeAsset.LogoVariacao, _ => TipoDeAsset.Tela };
-                c.Assets.Add(new Asset { Id = S(x, "asset_id") ?? "", Tipo = tipo, Nome = S(x, "nome") ?? "", Mime = S(x, "mime") ?? "", TamanhoBytes = (long)(D(x, "tamanho_bytes") ?? 0), Origem = S(x, "origem") ?? "manual", EmUso = B(x, "em_uso") ?? true, Url = S(x, "url") });
-            }
-        }
-        catch { }
-        try
-        {
-            var e = await Get($"api/trafego/motor/execucao?cliente={Uri.EscapeDataString(slug)}");
-            c.Modo = S(e, "modo") switch { "sombra" => ModoDeExecucao.Sombra, "executa" => ModoDeExecucao.Executa, _ => ModoDeExecucao.Recomenda };
-        }
-        catch { }
-        try
-        {
-            var p = await Get($"api/trafego/pecas-designer?cliente={Uri.EscapeDataString(slug)}");
-            c.Artes.Clear();
-            foreach (var x in Lista(p, "pecas"))
-                c.Artes.Add(new Arte { Id = S(x, "id") ?? "", PecaId = "", Etapa = Etapa.MOFU, Formato = "feed", Titulo = S(x, "titulo") ?? "", Url = S(x, "url") ?? "", Lote = (int)(D(x, "lote") ?? 0), Aprovada = true });
-        }
-        catch { }
-        try { await ListarRecomendacoesAsync(c); } catch { }
+                var t = await Get($"api/os/clientes/{c.Id}/trafego");
+                c.NichoSlug = S(t, "nicho_slug");
+                c.BudgetMensal = D(t, "budget_mensal");
+            }),
+            Seguro(async () =>
+            {
+                var m = await Get($"api/os/clientes/{c.Id}/mql");
+                c.TetoMql = D(m, "teto_mql");
+                c.Regua = m.TryGetProperty("regua", out var rg) && rg.ValueKind == JsonValueKind.Object
+                    ? JsonSerializer.Deserialize<ReguaV2>(rg.GetRawText(), Json)
+                    : null;
+            }),
+            Seguro(async () =>
+            {
+                var a = await Get($"api/os/clientes/{c.Id}/assets");
+                var lidos = Lista(a, "assets").Select(x =>
+                {
+                    var tipo = S(x, "tipo") switch { "logo_principal" => TipoDeAsset.LogoPrincipal, "logo_variacao" => TipoDeAsset.LogoVariacao, _ => TipoDeAsset.Tela };
+                    return new Asset { Id = S(x, "asset_id") ?? "", Tipo = tipo, Nome = S(x, "nome") ?? "", Mime = S(x, "mime") ?? "", TamanhoBytes = (long)(D(x, "tamanho_bytes") ?? 0), Origem = S(x, "origem") ?? "manual", EmUso = B(x, "em_uso") ?? true, Url = S(x, "url") };
+                }).ToList();
+                c.Assets.Clear();
+                c.Assets.AddRange(lidos);
+            }),
+            Seguro(async () =>
+            {
+                var e = await Get($"api/trafego/motor/execucao?cliente={Uri.EscapeDataString(slug)}");
+                c.Modo = S(e, "modo") switch { "sombra" => ModoDeExecucao.Sombra, "executa" => ModoDeExecucao.Executa, _ => ModoDeExecucao.Recomenda };
+            }),
+            Seguro(async () =>
+            {
+                var p = await Get($"api/trafego/pecas-designer?cliente={Uri.EscapeDataString(slug)}");
+                var lidas = Lista(p, "pecas").Select(x => new Arte { Id = S(x, "id") ?? "", PecaId = "", Etapa = Etapa.MOFU, Formato = "feed", Titulo = S(x, "titulo") ?? "", Url = S(x, "url") ?? "", Lote = (int)(D(x, "lote") ?? 0), Aprovada = true }).ToList();
+                c.Artes.Clear();
+                c.Artes.AddRange(lidas);
+            }),
+            Seguro(() => ListarRecomendacoesAsync(c)));
+        /* Se NADA veio (dev server travado, sessão caída), a tela precisa saber: o erro sobe. */
+        if (primeiroErro is not null && c.Ficha.Responsavel is null && c.NichoSlug is null && c.Assets.Count == 0)
+            throw new InvalidOperationException(primeiroErro);
         return c;
     }
 
