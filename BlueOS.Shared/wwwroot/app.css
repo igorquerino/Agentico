@@ -149,7 +149,8 @@ input.curto { display: inline-block; width: 240px; margin: 0; padding: 5px 10px;
 .visor-conteudo { display: flex; flex-direction: column; gap: 8px; max-width: min(94vw, 1200px); cursor: default; }
 .visor-conteudo img { display: block; max-width: 94vw; max-height: 82vh; object-fit: contain; border-radius: 12px; background: #000; box-shadow: 0 20px 60px rgba(0,0,0,.6); }
 .visor-conteudo img.feed { aspect-ratio: 1 / 1; } .visor-conteudo img.story { aspect-ratio: 9 / 16; }
-.visor-rodape { display: flex; justify-content: space-between; align-items: center; gap: 12px; color: var(--text-2); flex-wrap: wrap; }
+.visor-rodape { display: flex; justify-content: center; align-items: center; gap: 10px; color: var(--text-2); flex-wrap: wrap; }
+.visor-posicao { min-width: 56px; text-align: center; }
 .assento-fora { opacity: .75; }
 .btn-erro { background: rgba(239,68,68,.18); border-color: rgba(239,68,68,.6); color: #fca5a5; }
 .piloto-slot .piloto { max-width: 100%; }

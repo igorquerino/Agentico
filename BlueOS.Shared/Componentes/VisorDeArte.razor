@@ -4,13 +4,13 @@
     <div class="visor" role="dialog" aria-label="@a.Titulo" tabindex="0" @ref="caixa" @onclick="Fechar" @onkeydown="Tecla">
         <div class="visor-conteudo" @onclick:stopPropagation="true">
             <img src="@a.Url" alt="@a.Titulo" class="@(a.Formato == "story" ? "story" : "feed")" />
+            @* Só o essencial, na ordem: etapa · anterior · "1 de 31" · próxima · fechar (pedido do Igor, 30/10) *@
             <div class="visor-rodape">
-                <div class="mini"><span class="pilula pilula-etapa">@a.Etapa</span> @a.Titulo@(a.Template is null ? "" : $" · {TemplatesDoDesigner.Nome(a.Template).ToLowerInvariant()}")@(Posicao is null ? "" : $" · {Posicao}")</div>
-                <div class="acoes">
-                    @if (Anterior.HasDelegate) { <button type="button" class="btn btn-ghost btn-mini" @onclick="Anterior" title="seta para a esquerda">&larr; anterior</button> }
-                    @if (Proxima.HasDelegate) { <button type="button" class="btn btn-ghost btn-mini" @onclick="Proxima" title="seta para a direita">próxima &rarr;</button> }
-                    <button type="button" class="btn btn-mini" @onclick="Fechar">fechar (Esc)</button>
-                </div>
+                <span class="pilula pilula-etapa">@a.Etapa</span>
+                @if (Anterior.HasDelegate) { <button type="button" class="btn btn-ghost btn-mini" @onclick="Anterior" title="seta para a esquerda">&larr; anterior</button> }
+                @if (Posicao is not null) { <span class="mini text-2 visor-posicao">@Posicao</span> }
+                @if (Proxima.HasDelegate) { <button type="button" class="btn btn-ghost btn-mini" @onclick="Proxima" title="seta para a direita">próxima &rarr;</button> }
+                <button type="button" class="btn btn-mini" @onclick="Fechar" title="Esc">fechar</button>
             </div>
         </div>
     </div>
