@@ -104,6 +104,34 @@ O botão **Fonte de dados** (canto superior direito) troca entre:
 | `lib/trafego/motor/setup/cadastro.ts` (nichos) e `budget.ts` | `Core/Setup/Nichos.cs`, `Core/Motor/Dinheiro.cs` |
 | `lib/copy/estruturas.ts`, `contrato.ts`, régua V8 | `Core/Copy/Estruturas.cs`, `GeradorDemo.cs` (crivo) |
 
+## A API .NET (`BlueOS.Api`, trilha B do plano)
+
+Minimal API em ASP.NET Core com **Npgsql direto no Postgres do Supabase**, um round-trip por
+tela (joins e agregações em JSON no SQL). É a porta única para os dados: o RBAC do V1
+(`escopo-server.ts`, `trafego/escopo.ts`) vive em `Dominio/Escopo.cs` numa policy só, e a
+sessão é a da pessoa (login no Supabase Auth, JWT em cada chamada). O que ainda escreve na
+Meta ou no Storage (publicar, rodar o motor, aceite de PAUSAR/DUPLICAR, token, upload,
+copy pelo modelo) continua indo ao V1, pela mesma sessão, até o executor e a carga
+existirem aqui.
+
+| Rota | O que faz |
+| --- | --- |
+| `POST /api/login` | usuário ou e-mail + senha; devolve o JWT da pessoa e o escopo |
+| `GET /api/carteira` | todos os clientes do escopo com ficha, card Tráfego, critério, assets, publicação, squads e recomendações pendentes, numa consulta |
+| `GET /api/clientes/{slug}` | o cliente completo, com as artes do Designer e as recomendações com estado |
+| `GET /api/clientes/{slug}/ongoing` | KPIs do mês, conjuntos, leads pela régua e o que o agente fez |
+| `GET /api/clientes/{slug}/estrutura` | o Start, calculado pelo planejador portado |
+| `POST .../trafego`, `POST .../mql`, `PATCH .../ficha`, `PATCH .../modo` | as escritas, cada campo onde já morava no V1 |
+| `GET/PATCH /api/motor/chave-geral`, `POST .../recomendacoes/{id}/decisao` | a chave geral e a decisão do gestor (negar, ou aceitar o que não escreve na Meta) |
+
+Configuração: copie `BlueOS.Api/appsettings.Local.exemplo.json` para `appsettings.Local.json`
+(ignorado pelo git) com a **anon key** do Supabase (pública) e a **connection string do pooler**
+(Project Settings, Database, Transaction mode, porta 6543; a conexão direta é só IPv6).
+`dotnet run --project BlueOS.Api` sobe em `http://localhost:5201`; `GET /api/health` diz o que
+falta. No app, "Fonte de dados" tem a opção **API .NET**, com o endereço do V1 opcional para
+as ações que ainda passam por ele. Variáveis `BLUEOS_API_URL` + `BLUEOS_V1_LOGIN/SENHA`
+(e `BLUEOS_V1_URL` opcional) abrem o app já ligado à API.
+
 ## Próximos passos sugeridos
 
 1. Ligar a fonte V1 contra o localhost:3080 e corrigir os corpos que divergirem.

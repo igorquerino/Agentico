@@ -36,25 +36,25 @@ public sealed class Cliente
     public decimal? TetoMql { get; set; }
 
     public ContaDeAnuncios Conta { get; set; } = new();
-    public List<Asset> Assets { get; } = new();
+    public List<Asset> Assets { get; set; } = new();
 
-    public List<LoteDeCopy> Lotes { get; } = new();
-    public List<Arte> Artes { get; } = new();
+    public List<LoteDeCopy> Lotes { get; set; } = new();
+    public List<Arte> Artes { get; set; } = new();
     /// <summary>A arte do passo 3 do Start: o criativo piloto (designer_peca_id).</summary>
     public string? ArtePilotoId { get; set; }
 
     public Publicacao? Publicacao { get; set; }
 
     public ModoDeExecucao Modo { get; set; } = ModoDeExecucao.Recomenda;
-    public List<ConjuntoEmVeiculacao> Conjuntos { get; } = new();
-    public List<Recomendacao> Recomendacoes { get; } = new();
-    public List<AcaoDoAgente> Acoes { get; } = new();
+    public List<ConjuntoEmVeiculacao> Conjuntos { get; set; } = new();
+    public List<Recomendacao> Recomendacoes { get; set; } = new();
+    public List<AcaoDoAgente> Acoes { get; set; } = new();
     public DateTime? UltimaRodada { get; set; }
 
-    public IEnumerable<PecaDeCopy> Pecas => Lotes.SelectMany(l => l.Pecas);
-    public bool ContaConectada => !string.IsNullOrWhiteSpace(Conta.AdAccountId);
-    public bool TemLogo => Assets.Any(a => a.Tipo == TipoDeAsset.LogoPrincipal);
-    public Arte? ArtePiloto => Artes.FirstOrDefault(a => a.Id == ArtePilotoId);
+    [System.Text.Json.Serialization.JsonIgnore] public IEnumerable<PecaDeCopy> Pecas => Lotes.SelectMany(l => l.Pecas);
+    [System.Text.Json.Serialization.JsonIgnore] public bool ContaConectada => !string.IsNullOrWhiteSpace(Conta.AdAccountId);
+    [System.Text.Json.Serialization.JsonIgnore] public bool TemLogo => Assets.Any(a => a.Tipo == TipoDeAsset.LogoPrincipal);
+    [System.Text.Json.Serialization.JsonIgnore] public Arte? ArtePiloto => Artes.FirstOrDefault(a => a.Id == ArtePilotoId);
 }
 
 public sealed class FichaCadastral
@@ -139,7 +139,7 @@ public sealed class ContaDeAnuncios
     public bool? TokenValido { get; set; }
     public string? TokenMotivo { get; set; }
     public DateTime? TokenConferidoEm { get; set; }
-    public string ActId => string.IsNullOrWhiteSpace(AdAccountId) ? "" : $"act_{AdAccountId}";
+    [System.Text.Json.Serialization.JsonIgnore] public string ActId => string.IsNullOrWhiteSpace(AdAccountId) ? "" : $"act_{AdAccountId}";
 }
 
 public sealed class Asset
@@ -193,7 +193,7 @@ public sealed class PecaDeCopy
     public string Hipotese { get; set; } = "";
     public bool CrivoOk { get; set; } = true;
     public string? MotivoDoCrivo { get; set; }
-    public List<string> Regeneracoes { get; } = new();
+    public List<string> Regeneracoes { get; set; } = new();
     public bool Aprovada { get; set; }
     public int Versao { get; set; } = 1;
 
@@ -212,7 +212,7 @@ public sealed class LoteDeCopy
     public string VaultSha { get; init; } = "";
     public string? NichoSlug { get; init; }
     public string EstadoDoNicho { get; init; } = "ok";
-    public List<PecaDeCopy> Pecas { get; } = new();
+    public List<PecaDeCopy> Pecas { get; set; } = new();
     public int TokensIn { get; init; }
     public int TokensOut { get; init; }
 }
@@ -247,14 +247,14 @@ public sealed class Publicacao
     public string? FormularioId { get; set; }
     public string? Link { get; set; }
     public string NomeDaCampanha { get; init; } = "";
-    public List<ConjuntoCriado> Conjuntos { get; } = new();
-    public List<AnuncioCriado> Anuncios { get; } = new();
+    public List<ConjuntoCriado> Conjuntos { get; set; } = new();
+    public List<AnuncioCriado> Anuncios { get; set; } = new();
     public DateTime Em { get; init; } = DateTime.Now;
     public bool Pausado { get; set; } = true;
     public bool Simulado { get; init; }
     /// <summary>criando | parcial | ok | erro (trafego_start_publicacao.estado).</summary>
     public string Estado { get; set; } = "ok";
-    public List<string> Avisos { get; } = new();
+    public List<string> Avisos { get; set; } = new();
     public string? Erro { get; set; }
     public string VaultSha { get; init; } = "";
 }
@@ -277,8 +277,8 @@ public sealed class ConjuntoEmVeiculacao
     public Formato Formato { get; set; } = Formato.Imagem;
     public int AnunciosAtivos { get; set; } = 1;
     public DateOnly? PrimeiraEntrega { get; set; }
-    public List<DiaDeInsight> Dias { get; } = new();
-    public List<LeadDaCentral> Leads { get; } = new();
+    public List<DiaDeInsight> Dias { get; set; } = new();
+    public List<LeadDaCentral> Leads { get; set; } = new();
     public bool CoberturaCompleta { get; set; } = true;
     public Leitura Leitura { get; set; } = Leitura.Medida;
     public DateOnly? UltimaAcaoExecutada { get; set; }
@@ -289,8 +289,8 @@ public sealed class ConjuntoEmVeiculacao
     /// <summary>A peça de copy que o anúncio carrega (trafego_anuncio_peca).</summary>
     public string? PecaId { get; set; }
 
-    public long GastoVidaCentavos => Dias.Sum(d => d.GastoCentavos);
-    public int DiasEntrega => Dias.Count(d => d.GastoCentavos > 0);
+    [System.Text.Json.Serialization.JsonIgnore] public long GastoVidaCentavos => Dias.Sum(d => d.GastoCentavos);
+    [System.Text.Json.Serialization.JsonIgnore] public int DiasEntrega => Dias.Count(d => d.GastoCentavos > 0);
 }
 
 public sealed class LeadDaCentral

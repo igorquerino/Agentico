@@ -3,5 +3,6 @@
   <Project Path="BlueOS.Shared/BlueOS.Shared.csproj" />
   <Project Path="BlueOS.Web/BlueOS.Web.csproj" />
   <Project Path="BlueOS.Core/BlueOS.Core.csproj" />
+  <Project Path="BlueOS.Api/BlueOS.Api.csproj" />
   <Project Path="BlueOS.Tests/BlueOS.Tests.csproj" />
 </Solution>

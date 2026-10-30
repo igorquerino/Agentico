@@ -9,3 +9,6 @@ obj/
 
 # OS-generated files
 .DS_Store
+
+# Segredos locais da API (connection string, chaves): nunca no repositório
+BlueOS.Api/appsettings.Local.json

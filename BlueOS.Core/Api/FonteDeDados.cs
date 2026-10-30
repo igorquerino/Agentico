@@ -7,6 +7,7 @@ public sealed class ConfiguracaoDaFonte
 {
     public string Modo { get; set; } = "demo";
     public string BaseUrlV1 { get; set; } = "http://localhost:3080";
+    public string BaseUrlApi { get; set; } = "http://localhost:5201";
     public string? UltimoLogin { get; set; }
     /// <summary>O squad que a carteira mostra ao abrir. "POSEIDON" no piloto: é o único que o token da Meta alcança (Igor, 29/10/2026).</summary>
     public string? SquadPadrao { get; set; } = "POSEIDON";
@@ -64,8 +65,36 @@ public sealed class FonteDeDados
         var url = Environment.GetEnvironmentVariable("BLUEOS_V1_URL");
         var login = Environment.GetEnvironmentVariable("BLUEOS_V1_LOGIN");
         var senha = Environment.GetEnvironmentVariable("BLUEOS_V1_SENHA");
-        if (string.IsNullOrWhiteSpace(url) || string.IsNullOrWhiteSpace(login) || string.IsNullOrWhiteSpace(senha)) return null;
+        var apiUrl = Environment.GetEnvironmentVariable("BLUEOS_API_URL");
+        if (string.IsNullOrWhiteSpace(login) || string.IsNullOrWhiteSpace(senha)) return null;
+        /* Com BLUEOS_API_URL, a fonte é a API .NET (e o V1, se informado, fica para a Meta). */
+        if (!string.IsNullOrWhiteSpace(apiUrl)) return await UsarApiAsync(apiUrl.Trim(), string.IsNullOrWhiteSpace(url) ? null : url.Trim(), login.Trim(), senha);
+        if (string.IsNullOrWhiteSpace(url)) return null;
         return await UsarV1Async(url.Trim(), login.Trim(), senha);
+    }
+
+    /// <summary>Conecta à API .NET pela sessão da pessoa. O V1, quando informado, entra junto para o que ainda escreve na Meta.</summary>
+    public async Task<string> UsarApiAsync(string apiUrl, string? v1Url, string login, string senha)
+    {
+        V1Api? v1 = null;
+        if (!string.IsNullOrWhiteSpace(v1Url))
+        {
+            v1 = new V1Api(v1Url);
+            try { await v1.LoginAsync(login, senha); }
+            catch { v1.Dispose(); v1 = null; }
+        }
+        var api = new ApiNetApi(apiUrl, v1);
+        var nome = await api.LoginAsync(login, senha);
+        (Atual as IDisposable)?.Dispose();
+        Atual = api;
+        Atual.Mudou += () => Mudou?.Invoke();
+        Config.Modo = "api";
+        Config.BaseUrlApi = apiUrl;
+        if (!string.IsNullOrWhiteSpace(v1Url)) Config.BaseUrlV1 = v1Url;
+        Config.UltimoLogin = login;
+        Gravar();
+        Mudou?.Invoke();
+        return nome;
     }
 
     public void GravarSquadPadrao(string? squad)
