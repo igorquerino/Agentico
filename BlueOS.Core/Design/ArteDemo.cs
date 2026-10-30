@@ -24,7 +24,7 @@ public static class ArteDemo
     public static Arte Gerar(Cliente c, PecaDeCopy peca, string formato, int lote, int indice)
     {
         var (largura, altura) = formato == "story" ? (1080, 1920) : (1080, 1080);
-        var (corA, corB) = Paletas[(Math.Abs(c.Slug.GetHashCode()) + indice) % Paletas.Length];
+        var (corA, corB) = Paletas[(BlueOS.Core.Setup.Semente.De(c.Slug) + indice) % Paletas.Length];
         var marca = string.IsNullOrWhiteSpace(c.Produto.NomeCorreto) ? c.Nome : c.Produto.NomeCorreto!;
         var fonteHead = formato == "story" ? 78 : 64;
         var colunas = formato == "story" ? 20 : 24;

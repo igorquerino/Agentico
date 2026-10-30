@@ -300,8 +300,16 @@ public class FluxoDemoTests
         await api.EscolherPilotoAsync(c, Etapa.MOFU, artes[0].Id);
         Assert.Equal(Estagio.Design, Estagios.DoCliente(c, api.Parametros));
         Assert.Contains("criativo piloto de BOFU", Estagios.DesignPronto(c, api.Parametros).Pendencias);
+        /* validador de assento: a arte de MOFU na vaga de BOFU é pendência do Design e recusa do Publicar */
+        await api.EscolherPilotoAsync(c, Etapa.BOFU, artes[1].Id);
+        Assert.Equal(Estagio.Design, Estagios.DoCliente(c, api.Parametros));
+        Assert.Contains(Estagios.DesignPronto(c, api.Parametros).Pendencias, s => s.Contains("assento errado"));
+        var recusada = await api.PublicarAsync(c, new PedidoDePublicacao("https://x.com/privacidade", "https://x.com", null, null));
+        Assert.False(recusada.Ok);
+        Assert.Equal("assento_errado", recusada.Codigo);
         var artesBofu = await api.GerarArtesAsync(c, [lote.Pecas.First(p => p.Etapa == Etapa.BOFU).Id], ["feed"]);
         await api.EscolherPilotoAsync(c, Etapa.BOFU, artesBofu[0].Id);
+        Assert.All(Estagios.ValidarAssentos(c, api.Parametros), a => Assert.True(a.Ok, a.Motivo));
         Assert.Equal(Estagio.Campanha, Estagios.DoCliente(c, api.Parametros));
         var est = await api.MontarEstruturaAsync(c);
         Assert.True(est.Ok);

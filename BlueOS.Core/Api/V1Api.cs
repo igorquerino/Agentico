@@ -576,6 +576,8 @@ public sealed class V1Api : IBlueApi, IDisposable
     {
         /* O Publicar do V1 (publicar/start.ts) sobe UM designer_peca_id para todos os conjuntos. Vai o piloto
            de MOFU (toda faixa tem MOFU); os outros pilotos ficam registrados e entram pela troca de criativo. */
+        if (Fluxo.Estagios.ValidarAssentos(c, Parametros).FirstOrDefault(a => !a.Ok && a.Arte is not null) is { } errado)
+            return new(false, "assento_errado", $"validador de assento: {errado.Motivo}. Troque o piloto de {errado.Vaga} no Design por uma arte gerada pela copy de {errado.Vaga}.", false, null, null);
         var piloto = c.ArtePiloto;
         if (piloto is null) return new(false, "sem_estrutura", "escolha o criativo piloto de MOFU (uma peça do Designer) antes de publicar.", false, null, null);
         var corpo = new

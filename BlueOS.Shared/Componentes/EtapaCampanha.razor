@@ -75,6 +75,18 @@ else
                     </div>
                 }
             </div>
+            @{ var assentos = Estagios.ValidarAssentos(Cliente, Api.Parametros); }
+            <div class="validador">
+                <strong>Validador de assento</strong>
+                <ul class="lista-simples">
+                    @foreach (var va in assentos)
+                    {
+                        <li class="mini @(va.Ok ? "ok" : "erro")">@(va.Ok ? "✓" : "✗") <strong>@va.Vaga</strong>: @va.Motivo</li>
+                    }
+                </ul>
+                @if (assentos.All(x => x.Ok)) { <p class="ok mini">cada conjunto vai rodar com o criativo gerado pela copy da etapa dele.</p> }
+                else { <p class="erro mini">o Publicar fica travado até cada vaga receber uma arte gerada pela copy da própria etapa.</p> }
+            </div>
             @if (!Api.EhDemo && Estagios.EtapasExigidas(Cliente, Api.Parametros).Count > 1)
             {
                 <p class="warn mini">O Publicar do V1 sobe um criativo só (o de MOFU) para todos os conjuntos. Os outros pilotos ficam registrados aqui e entram pela troca de criativo, no Gerenciador ou pela árvore.</p>

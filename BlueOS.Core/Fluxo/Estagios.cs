@@ -4,6 +4,9 @@ using BlueOS.Core.Setup;
 
 namespace BlueOS.Core.Fluxo;
 
+/// <summary>Uma vaga de piloto conferida: a etapa da vaga, a arte nela, a etapa real da arte (pela copy) e o veredito.</summary>
+public sealed record AssentoDoPiloto(Etapa Vaga, Arte? Arte, Etapa? EtapaDaArte, bool Ok, string Motivo);
+
 /* ============================================================================
    O FLUXO ÚNICO DO GESTOR DE TRÁFEGO: em que estágio o cliente está.
    ----------------------------------------------------------------------------
@@ -72,9 +75,30 @@ public static class Estagios
         var pend = new List<string>();
         if (c.Artes.Count == 0) pend.Add("nenhuma arte gerada");
         else if (!c.Artes.Any(a => a.Aprovada)) pend.Add("nenhuma arte aprovada");
-        foreach (var et in EtapasExigidas(c, p))
-            if (c.PilotoDa(et) is null) pend.Add($"criativo piloto de {et}");
+        foreach (var a in ValidarAssentos(c, p))
+            if (!a.Ok) pend.Add(a.Arte is null ? $"criativo piloto de {a.Vaga}" : $"piloto de {a.Vaga} no assento errado ({a.Motivo})");
         return (pend.Count == 0, pend);
+    }
+
+    /// <summary>O VALIDADOR DE ASSENTO: o piloto de cada etapa tem de ser uma arte gerada pela copy DAQUELA etapa.
+    /// Um criativo MOFU rodando como BOFU quebra a metodologia (a copy de cada etapa fala com uma consciência
+    /// diferente), então a vaga errada é pendência do Design e recusa do Publicar. A etapa vem da copy da arte
+    /// (PecaId) e, sem ela (arte da biblioteca), da etapa marcada na própria arte.</summary>
+    public static List<AssentoDoPiloto> ValidarAssentos(Cliente c, ParametrosMotor p)
+    {
+        var saida = new List<AssentoDoPiloto>();
+        foreach (var vaga in EtapasExigidas(c, p))
+        {
+            var arte = c.PilotoDa(vaga);
+            if (arte is null) { saida.Add(new(vaga, null, null, false, $"sem piloto de {vaga}")); continue; }
+            var copia = c.Pecas.FirstOrDefault(x => x.Id == arte.PecaId);
+            var etapaDaArte = copia?.Etapa ?? arte.Etapa;
+            var origem = copia is not null ? $"copy {copia.Etapa} {copia.Numero}" : $"arte marcada como {arte.Etapa} na biblioteca";
+            saida.Add(etapaDaArte == vaga
+                ? new(vaga, arte, etapaDaArte, true, $"assento certo: {origem} na vaga de {vaga}")
+                : new(vaga, arte, etapaDaArte, false, $"arte de {etapaDaArte} ({origem}) na vaga de {vaga}"));
+        }
+        return saida;
     }
 
     public static bool CampanhaPublicada(Cliente c) => c.Publicacao is { Estado: "ok" };

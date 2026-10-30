@@ -31,8 +31,10 @@
                     <span class="pilula pilula-etapa">@et</span>
                     @if (Cliente.PilotoDa(et) is { } pl)
                     {
+                        var vaga = Assentos.First(x => x.Vaga == et);
                         <img class="piloto" src="@pl.Url" alt="@pl.Titulo" />
                         <p class="mini">@pl.Titulo</p>
+                        <p class="mini @(vaga.Ok ? "ok" : "erro")">@(vaga.Ok ? "✓ " : "✗ ")@vaga.Motivo</p>
                         <button type="button" class="btn btn-ghost btn-mini" @onclick="() => Piloto(et, null)">tirar</button>
                     }
                     else { <p class="warn mini">sem piloto de @et: escolha uma arte na galeria</p> }
@@ -56,7 +58,9 @@
                     @foreach (var et in Exigidas)
                     {
                         var ehPiloto = Cliente.Pilotos.TryGetValue(et, out var pid) && pid == a.Id;
-                        <button type="button" class="btn btn-mini @(ehPiloto ? "btn-ok" : "btn-ghost")" title="@(a.Etapa == et ? $"usar como piloto de {et}" : $"a copy desta arte é de {a.Etapa}; usar mesmo assim como piloto de {et}")" @onclick="() => Piloto(et, ehPiloto ? null : a.Id)">@(ehPiloto ? $"piloto {et}" : $"piloto de {et}")</button>
+                        var etapaDaArte = Cliente.Pecas.FirstOrDefault(p => p.Id == a.PecaId)?.Etapa ?? a.Etapa;
+                        var assentoCerto = etapaDaArte == et;
+                        <button type="button" class="btn btn-mini @(ehPiloto ? (assentoCerto ? "btn-ok" : "btn-erro") : "btn-ghost") @(assentoCerto ? "" : "assento-fora")" title="@(assentoCerto ? $"usar como piloto de {et}" : $"assento errado: esta arte nasceu da copy de {etapaDaArte}; o validador recusa o Publicar com ela na vaga de {et}")" @onclick="() => Piloto(et, ehPiloto ? null : a.Id)">@(ehPiloto ? $"piloto {et}" : $"piloto de {et}")@(assentoCerto ? "" : " ⚠")</button>
                     }
                 </div>
             </figcaption>
@@ -104,5 +108,7 @@
     async Task Aprovar(Arte a) { erro = null; try { await Api.AprovarArteAsync(Cliente, a.Id, !a.Aprovada); } catch (Exception ex) { erro = ex.Message; } }
     /// <summary>As etapas que a faixa do budget pede: uma vaga de piloto para cada.</summary>
     IReadOnlyList<Etapa> Exigidas => Estagios.EtapasExigidas(Cliente, Api.Parametros);
+    /// <summary>O validador de assento: cada vaga com a arte dela e o veredito (copy da etapa certa ou não).</summary>
+    List<AssentoDoPiloto> Assentos => Estagios.ValidarAssentos(Cliente, Api.Parametros);
     async Task Piloto(Etapa etapa, string? arteId) { erro = null; try { await Api.EscolherPilotoAsync(Cliente, etapa, arteId); } catch (Exception ex) { erro = ex.Message; } }
 }

@@ -95,8 +95,8 @@ public sealed class DemoApi : IBlueApi
             .ToList();
         var lista = new List<FormularioDaMeta>
         {
-            new("120" + Math.Abs(c.Slug.GetHashCode()), $"{c.Nome} - Formulário Leads Instagram", "ACTIVE", 34, DateTime.Now.AddDays(-3), perguntas),
-            new("119" + Math.Abs(c.Slug.GetHashCode()), $"[\U0001F30A Blue] [FORM-L] régua v2", "ARCHIVED", 0, DateTime.Now.AddDays(-9), perguntas),
+            new("120" + BlueOS.Core.Setup.Semente.De(c.Slug), $"{c.Nome} - Formulário Leads Instagram", "ACTIVE", 34, DateTime.Now.AddDays(-3), perguntas),
+            new("119" + BlueOS.Core.Setup.Semente.De(c.Slug), $"[\U0001F30A Blue] [FORM-L] régua v2", "ARCHIVED", 0, DateTime.Now.AddDays(-9), perguntas),
         };
         return De<IReadOnlyList<FormularioDaMeta>>(lista);
     }
@@ -259,6 +259,9 @@ public sealed class DemoApi : IBlueApi
             return new(false, "sem_estrutura", r.Motivo ?? "a estrutura não tem conjuntos para publicar.", false, null, null);
         var e = r.Estrutura;
         /* Um criativo por etapa: cada conjunto leva o piloto da etapa dele. Faltando algum, o publicar recusa. */
+        /* O validador de assento vem antes de tudo: arte de MOFU na vaga de BOFU não sobe. */
+        if (Estagios.ValidarAssentos(c, Parametros).FirstOrDefault(a => !a.Ok && a.Arte is not null) is { } errado)
+            return new(false, "assento_errado", $"validador de assento: {errado.Motivo}. Troque o piloto de {errado.Vaga} no Design por uma arte gerada pela copy de {errado.Vaga}.", false, null, null);
         var pilotos = new Dictionary<Etapa, Arte>();
         foreach (var et in e.Conjuntos.Select(x => x.Etapa).Distinct())
         {
@@ -518,7 +521,7 @@ public sealed class DemoApi : IBlueApi
 
     void SemearDias(Cliente c, ConjuntoEmVeiculacao cj, DateOnly inicio, int dias, string perfil)
     {
-        var rnd = new Random(cj.AdsetId.GetHashCode());
+        var rnd = new Random(BlueOS.Core.Setup.Semente.De(cj.AdsetId));
         var regua = c.Regua;
         for (var d = 0; d < dias; d++)
         {

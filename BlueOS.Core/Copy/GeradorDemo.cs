@@ -73,7 +73,7 @@ public static class GeradorDemo
         var dores = c.Icp.DoresPrincipais.Count > 0 ? c.Icp.DoresPrincipais : voc.Sintomas.ToList();
         var ganhos = c.Icp.DesejosPrincipais.Count > 0 ? c.Icp.DesejosPrincipais : voc.Ganhos.ToList();
         var promessa = c.Estrategia.PromessaPrincipal;
-        var semente = (c.Slug + numeroDoLote).GetHashCode();
+        var semente = BlueOS.Core.Setup.Semente.De(c.Slug + numeroDoLote);
         var rnd = new Random(semente);
 
         var lote = new LoteDeCopy

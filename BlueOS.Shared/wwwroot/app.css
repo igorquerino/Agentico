@@ -142,6 +142,9 @@ input.curto { display: inline-block; width: 240px; margin: 0; padding: 5px 10px;
 .pilotos { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; }
 .piloto-slot { border: 1px solid var(--border); border-radius: var(--raio); padding: 10px; display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
 .piloto-slot.vazio { border-style: dashed; }
+.validador { margin-top: 12px; border-top: 1px solid var(--border); padding-top: 10px; }
+.assento-fora { opacity: .75; }
+.btn-erro { background: rgba(239,68,68,.18); border-color: rgba(239,68,68,.6); color: #fca5a5; }
 .piloto-slot .piloto { max-width: 100%; }
 .kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 14px; }
 .kpi { background: var(--raise); border: 1px solid var(--border); border-radius: 12px; padding: 12px 14px; display: flex; flex-direction: column; gap: 2px; }
