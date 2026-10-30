@@ -22,6 +22,7 @@ builder.Services.ConfigureHttpJsonOptions(o =>
     o.SerializerOptions.Converters.Add(new JsonStringEnumConverter());
     o.SerializerOptions.PropertyNameCaseInsensitive = true;
 });
+builder.Services.AddHttpClient("supabase-mgmt");
 builder.Services.AddSingleton<Db>();
 builder.Services.AddHttpClient<SupabaseAuth>();
 builder.Services.AddSingleton<Sessoes>();
@@ -57,6 +58,9 @@ app.MapGet("/api/health", async (Db db, IConfiguration cfg) =>
     {
         ok = banco.Ok,
         banco = banco.Ok ? "conectado" : banco.Erro,
+        transporte = db.Transporte,
+        projeto = db.Ref,
+        producao_bloqueada = Db.RefProducao,
         supabase = string.IsNullOrWhiteSpace(cfg["Supabase:Url"]) ? "falta Supabase:Url" : cfg["Supabase:Url"],
         anon_key = string.IsNullOrWhiteSpace(cfg["Supabase:AnonKey"]) ? "falta Supabase:AnonKey" : "ok",
     });
@@ -67,12 +71,12 @@ app.MapPost("/api/login", async (LoginPedido p, Db db, SupabaseAuth auth, Sessoe
 {
     if (string.IsNullOrWhiteSpace(p.Login) || string.IsNullOrWhiteSpace(p.Senha)) return Results.BadRequest(new { error = "Informe usuario e senha." });
     var termo = p.Login.Trim().ToLowerInvariant();
-    var u = await db.UmAsync("""
-        select u.user_id::text, u.user_nome, u.user_username, u.user_ativo, au.email
+    var u = await db.UmAsync(Sql.Fmt($"""
+        select u.user_id::text as user_id, u.user_nome, u.user_username, u.user_ativo, au.email
         from public.users u join auth.users au on au.id = u.user_id
-        where lower(u.user_username) = @t or lower(u.user_email) = @t
+        where lower(u.user_username) = {termo} or lower(u.user_email) = {termo}
         limit 1
-        """, r => new { Id = r.GetString(0), Nome = r.GetString(1), Username = r.GetString(2), Ativo = r.GetBoolean(3), Email = r.GetString(4) }, ("t", termo));
+        """), r => new { Id = r.S("user_id")!, Nome = r.S("user_nome") ?? "", Username = r.S("user_username") ?? "", Ativo = r.B("user_ativo") ?? false, Email = r.S("email") ?? "" });
     if (u is null) return Results.Json(new { error = "Usuario ou senha invalidos." }, statusCode: 401);
     if (!u.Ativo) return Results.Json(new { error = "Conta inativa." }, statusCode: 403);
     var sessao = await auth.EntrarAsync(u.Email, p.Senha);

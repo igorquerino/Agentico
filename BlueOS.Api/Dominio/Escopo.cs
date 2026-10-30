@@ -12,6 +12,7 @@ namespace BlueOS.Api.Dominio;
    · escopo squad           → só os próprios squads;
    · sem vínculo            → NÃO vê nada (fail-closed, desde 10/08/2026).
    O squad interno só entra por vínculo direto, nunca por agregação.
+   Tudo sai em DUAS consultas (membros + squads): é o que vale por chamada.
    ============================================================================ */
 public sealed record EscopoDaSessao(string UserId, bool Global, IReadOnlyList<string>? SquadIds, IReadOnlyList<string> Papeis)
 {
@@ -19,6 +20,7 @@ public sealed record EscopoDaSessao(string UserId, bool Global, IReadOnlyList<st
     public bool PodeEditarMql => Papeis.Any(p => Escopo.CargosEditamMql.Contains(p)) || Global;
     /// <summary>lib/trafego/permissao.ts, CARGOS_QUE_APLICAM: coordenador pra cima e os heads.</summary>
     public bool PodeAplicarNaMeta => Papeis.Any(p => Escopo.CargosQueAplicam.Contains(p)) || Global;
+    public Guid[]? SquadGuids => SquadIds?.Select(Guid.Parse).ToArray();
 }
 
 public sealed class Escopo(Db db)
@@ -32,15 +34,15 @@ public sealed class Escopo(Db db)
 
     public async Task<EscopoDaSessao> DoUsuarioAsync(string userId)
     {
-        var membros = await db.ListaAsync("""
-            select m.squad_id::text, m.tribo_id::text, m.departamento_id::text, r.role_escopo, r.role_slug
+        var membros = await db.ListaAsync(Sql.Fmt($"""
+            select m.squad_id::text as squad_id, m.tribo_id::text as tribo_id, m.departamento_id::text as departamento_id, r.role_escopo, r.role_slug
             from public.membros m left join public.roles r on r.role_id = m.role_id
-            where m.user_id = @u::uuid and m.membro_ate is null
-            """, r => new Membro(r.S("squad_id"), r.S("tribo_id"), r.S("departamento_id"), r.S("role_escopo"), r.S("role_slug")), ("u", userId));
+            where m.user_id = {Guid.Parse(userId)} and m.membro_ate is null
+            """), r => new Membro(r.S("squad_id"), r.S("tribo_id"), r.S("departamento_id"), r.S("role_escopo"), r.S("role_slug")));
         var papeis = membros.Select(m => m.RoleSlug).Where(s => !string.IsNullOrEmpty(s)).Select(s => s!).Distinct().ToList();
         if (membros.Any(m => m.RoleEscopo == "global")) return new(userId, true, null, papeis);
 
-        var squads = await db.ListaAsync("select squad_id::text, squad_nome, tribo_id::text, coalesce(squad_interno, false) as squad_interno from public.squads",
+        var squads = await db.ListaAsync("select squad_id::text as squad_id, squad_nome, tribo_id::text as tribo_id, coalesce(squad_interno, false) as squad_interno from public.squads",
             r => new Squad(r.S("squad_id")!, r.S("squad_nome") ?? "", r.S("tribo_id"), r.B("squad_interno") ?? false));
         var internos = squads.Where(s => s.Interno).Select(s => s.Id).ToHashSet();
 
@@ -56,17 +58,17 @@ public sealed class Escopo(Db db)
         return new(userId, false, ids.ToList(), papeis);
     }
 
+    /// <summary>O filtro SQL de "este cliente está no alcance", para colar num where sobre `c` (clientes).</summary>
+    public static string FiltroDoAlcance(EscopoDaSessao esc) => esc.Global ? "" : Sql.Fmt($"""
+         and exists (select 1 from public.cliente_squads cs where cs.cliente_id = c.cliente_id and cs.squad_id = any({esc.SquadGuids ?? []})
+                     and (cs.cliente_squad_ate is null or not exists (select 1 from public.cliente_squads o where o.cliente_id = cs.cliente_id and o.cliente_squad_ate is null)))
+        """);
+
     /// <summary>O cliente (slug) está no alcance? Decide pelo escopo, não pelo parâmetro.</summary>
     public async Task<bool> AlcancaAsync(EscopoDaSessao esc, string slug)
     {
-        if (esc.Global)
-            return await db.UmAsync("select 1::int as um from public.clientes where cliente_slug = @s and cliente_arquivado_em is null", r => (object)1, ("s", slug)) is not null;
-        if (esc.SquadIds is null || esc.SquadIds.Count == 0) return false;
-        return await db.UmAsync("""
-            select 1::int as um from public.clientes c
-            where c.cliente_slug = @s and c.cliente_arquivado_em is null
-              and exists (select 1 from public.cliente_squads cs where cs.cliente_id = c.cliente_id and cs.squad_id = any(@ids::uuid[])
-                            and (cs.cliente_squad_ate is null or not exists (select 1 from public.cliente_squads o where o.cliente_id = cs.cliente_id and o.cliente_squad_ate is null)))
-            """, r => (object)1, ("s", slug), ("ids", esc.SquadIds.ToArray())) is not null;
+        if (!esc.Global && (esc.SquadIds is null || esc.SquadIds.Count == 0)) return false;
+        var l = await db.ListaAsync(Sql.Fmt($"select 1 as um from public.clientes c where c.cliente_slug = {slug} and c.cliente_arquivado_em is null") + FiltroDoAlcance(esc));
+        return l.Count > 0;
     }
 }

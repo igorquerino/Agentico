@@ -125,8 +125,14 @@ existirem aqui.
 | `GET/PATCH /api/motor/chave-geral`, `POST .../recomendacoes/{id}/decisao` | a chave geral e a decisão do gestor (negar, ou aceitar o que não escreve na Meta) |
 
 Configuração: copie `BlueOS.Api/appsettings.Local.exemplo.json` para `appsettings.Local.json`
-(ignorado pelo git) com a **anon key** do Supabase (pública) e a **connection string do pooler**
-(Project Settings, Database, Transaction mode, porta 6543; a conexão direta é só IPv6).
+(ignorado pelo git) com a **anon key** do Supabase (pública) e um dos dois transportes:
+a **connection string do pooler** com a senha do banco (Npgsql, o alvo do plano; Project
+Settings, Database, Transaction mode, porta 6543, porque a conexão direta é só IPv6), ou,
+enquanto a senha não existe, o **Supabase:AccessToken** da Management API (o mesmo
+`SUPABASE_ACCESS_TOKEN` que o gate de deploy do V1 usa): aí cada tela é uma chamada HTTPS
+a `api.supabase.com`, mais lenta que o Npgsql, e o token é de conta, mais poderoso que uma
+senha de banco. É ponte, não destino. Em qualquer transporte a API **recusa o ref de produção**
+(`oaeqvfmvjahmlgdhpsrv`); ela só fala com o projeto do `Supabase:Url`, a homologação.
 `dotnet run --project BlueOS.Api` sobe em `http://localhost:5201`; `GET /api/health` diz o que
 falta. No app, "Fonte de dados" tem a opção **API .NET**, com o endereço do V1 opcional para
 as ações que ainda passam por ele. Variáveis `BLUEOS_API_URL` + `BLUEOS_V1_LOGIN/SENHA`
