@@ -137,7 +137,7 @@ public sealed class Carteira(Db db)
                 c.Assets.Add(new Asset
                 {
                     Id = Str(a, "asset_id") ?? "", Tipo = tipo, Nome = Str(a, "nome") ?? "", Mime = Str(a, "mime") ?? "",
-                    TamanhoBytes = a.TryGetProperty("tamanho_bytes", out var t) && t.ValueKind == JsonValueKind.Number ? t.GetInt64() : 0,
+                    TamanhoBytes = a.TryGetProperty("tamanho_bytes", out var t) ? Num(a, "tamanho_bytes") : 0,
                     Origem = Str(a, "origem") ?? "manual", EmUso = a.TryGetProperty("em_uso", out var u) && u.ValueKind == JsonValueKind.True,
                 });
             }
@@ -186,7 +186,14 @@ public sealed class Carteira(Db db)
 
     static string? TryJson(ILinha r, string col) { try { return r.Json(col); } catch { return null; } }
     static string? Str(JsonElement o, string n) => o.ValueKind == JsonValueKind.Object && o.TryGetProperty(n, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
-    static long Num(JsonElement o, string n) => o.ValueKind == JsonValueKind.Object && o.TryGetProperty(n, out var v) ? v.ValueKind == JsonValueKind.Number ? v.GetInt64() : long.TryParse(v.GetString(), out var l) ? l : 0 : 0;
+    /// <summary>Um inteiro vindo do JSON, tolerante: número com fração arredonda, texto numérico converte, o resto é 0.</summary>
+    static long Num(JsonElement o, string n) => o.ValueKind == JsonValueKind.Object && o.TryGetProperty(n, out var v) ? v switch
+    {
+        { ValueKind: JsonValueKind.Number } when v.TryGetInt64(out var i) => i,
+        { ValueKind: JsonValueKind.Number } => (long)Math.Round(v.GetDouble()),
+        { ValueKind: JsonValueKind.String } => double.TryParse(v.GetString(), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var d) ? (long)Math.Round(d) : 0,
+        _ => 0,
+    } : 0;
 
     static string? Junta(ILinha r, string col)
     {

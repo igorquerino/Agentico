@@ -351,6 +351,13 @@ public sealed class Recomendacao
     public string? ResultadoMeta { get; set; }
 }
 
+/* ---- os formulários de cadastro da Meta (leadgen_forms da página do cliente) ---- */
+
+public sealed record OpcaoDoFormulario(string Chave, string Valor);
+/// <summary>Uma pergunta do formulário. `Chave` é o nome do campo como a Meta entrega no lead (é o `nome` da régua).</summary>
+public sealed record PerguntaDoFormulario(string Chave, string Rotulo, string Tipo, IReadOnlyList<OpcaoDoFormulario> Opcoes);
+public sealed record FormularioDaMeta(string Id, string Nome, string Status, int Leads, DateTime? CriadoEm, IReadOnlyList<PerguntaDoFormulario> Perguntas);
+
 public sealed record RodadaDoMotor(
     IReadOnlyList<Recomendacao> Recomendadas,
     int Gravadas,

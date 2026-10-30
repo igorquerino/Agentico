@@ -135,6 +135,9 @@ public sealed class ApiNetApi : IBlueApi, IDisposable
         return lista;
     }
 
+    public async Task<IReadOnlyList<FormularioDaMeta>> ListarFormulariosAsync(Cliente c) =>
+        await Get<List<FormularioDaMeta>>($"api/clientes/{Uri.EscapeDataString(c.Slug)}/formularios");
+
     public async Task<(bool Ligada, string? Motivo)> ChaveGeralAsync()
     {
         var j = await Get<JsonElement>("api/motor/chave-geral");

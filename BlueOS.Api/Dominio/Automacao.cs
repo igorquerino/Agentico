@@ -155,7 +155,8 @@ public sealed class Automacao(Db db)
             {
                 if (n.TryGetProperty("ponderado", out var p) && p.ValueKind == JsonValueKind.Number) pond = p.GetDouble();
                 if (n.TryGetProperty("taxa", out var t) && t.ValueKind == JsonValueKind.Number) taxa = t.GetDouble();
-                if (n.TryGetProperty("custoCentavos", out var cc) && cc.ValueKind == JsonValueKind.Number) custo = cc.GetInt64();
+                /* o V1 grava custoCentavos como número livre (às vezes com fração): arredonda em vez de quebrar */
+                if (n.TryGetProperty("custoCentavos", out var cc) && cc.ValueKind == JsonValueKind.Number) custo = cc.TryGetInt64(out var ci) ? ci : (long)Math.Round(cc.GetDouble());
                 if (n.TryGetProperty("multiplo", out var m) && m.ValueKind == JsonValueKind.Number) mult = m.GetDouble();
                 if (n.TryGetProperty("nome", out var nm) && nm.ValueKind == JsonValueKind.String) nome = nm.GetString();
             }

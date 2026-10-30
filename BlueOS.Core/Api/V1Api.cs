@@ -326,6 +326,9 @@ public sealed class V1Api : IBlueApi, IDisposable
         c.Regua = regua; c.TetoMql = tetoMql; Avisar();
     }
 
+    public Task<IReadOnlyList<FormularioDaMeta>> ListarFormulariosAsync(Cliente c) =>
+        throw new NotSupportedException("o V1 não tem rota que liste os formulários da Meta: use a fonte API .NET, que lê a página do cliente com o token do squad.");
+
     /* ---- assets -------------------------------------------------------------- */
 
     public async Task<Asset> SubirAssetAsync(Cliente c, TipoDeAsset tipo, string nome, string mime, byte[] bytes)

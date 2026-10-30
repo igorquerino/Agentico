@@ -223,7 +223,7 @@
             {
                 <div class="acoes">
                     <button type="button" class="btn btn-destaque btn-mini" @onclick="() => Decidir(r, true)" disabled="@ocupado">Aceitar @(Arvore.Escreve(r.Acao) ? "e aplicar na Meta" : "")</button>
-                    <input class="curto" placeholder="motivo para negar" @bind="motivos[r.Id]" />
+                    <input class="curto" placeholder="motivo para negar" value="@motivos.GetValueOrDefault(r.Id, string.Empty)" @onchange="e => motivos[r.Id] = e.Value?.ToString() ?? string.Empty" />
                     <button type="button" class="btn btn-ghost btn-mini" @onclick="() => Decidir(r, false)" disabled="@ocupado">Negar</button>
                 </div>
             }

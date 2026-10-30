@@ -35,6 +35,9 @@ public interface IBlueApi
     Task SalvarFichaAsync(Cliente c);
     Task SalvarCardTrafegoAsync(Cliente c, string? nichoSlug, decimal? budgetMensal);
     Task SalvarCriterioMqlAsync(Cliente c, ReguaV2? regua, decimal? tetoMql);
+    /// <summary>Os formulários de cadastro da página do cliente na Meta, com as perguntas e opções: é deles que o gestor
+    /// monta a régua escolhendo quais respostas são fortes, médias ou eliminatórias, em vez de digitar.</summary>
+    Task<IReadOnlyList<FormularioDaMeta>> ListarFormulariosAsync(Cliente c);
 
     /* ---- assets ------------------------------------------------------------ */
     Task<Asset> SubirAssetAsync(Cliente c, TipoDeAsset tipo, string nome, string mime, byte[] bytes);

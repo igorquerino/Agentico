@@ -30,6 +30,8 @@ builder.Services.AddScoped<Escopo>();
 builder.Services.AddScoped<Carteira>();
 builder.Services.AddScoped<Automacao>();
 builder.Services.AddScoped<Escritas>();
+builder.Services.AddHttpClient("meta", h => h.Timeout = TimeSpan.FromSeconds(60));
+builder.Services.AddScoped<Meta>();
 builder.Services.AddCors(c => c.AddDefaultPolicy(p => p.AllowAnyHeader().AllowAnyMethod().AllowAnyOrigin()));
 
 var app = builder.Build();
@@ -47,7 +49,11 @@ app.UseExceptionHandler(h => h.Run(async ctx =>
         Npgsql.NpgsqlException n => $"banco: {n.Message}",
         _ => ex?.Message ?? "erro",
     };
-    await ctx.Response.WriteAsJsonAsync(new { error = msg });
+    /* Em desenvolvimento, o tipo e os primeiros quadros da pilha ajudam a achar a linha. */
+    var detalhe = app.Environment.IsDevelopment() && ex is not null
+        ? ex.GetType().Name + ": " + string.Join(" | ", (ex.StackTrace ?? "").Split('\n').Take(4).Select(l => l.Trim()))
+        : null;
+    await ctx.Response.WriteAsJsonAsync(new { error = msg, detalhe });
 }));
 
 /* ---- saúde: a API sobe mesmo sem banco configurado; o /health diz o que falta ---- */
@@ -139,6 +145,15 @@ api.MapGet("/clientes/{slug}/ongoing", async (string slug, HttpContext c, Escopo
     var cli = await carteira.ObterAsync(esc, slug);
     if (cli is null) return Results.Json(new { error = "cliente fora do seu escopo" }, statusCode: 403);
     return Results.Ok(await automacao.OngoingAsync(cli));
+});
+
+api.MapGet("/clientes/{slug}/formularios", async (string slug, HttpContext c, Escopo escopo, Carteira carteira, Meta meta) =>
+{
+    var esc = await escopo.DoUsuarioAsync(UserId(c));
+    var cli = await carteira.ObterAsync(esc, slug);
+    if (cli is null) return Results.Json(new { error = "cliente fora do seu escopo" }, statusCode: 403);
+    try { return Results.Ok(await meta.FormulariosAsync(cli)); }
+    catch (InvalidOperationException e) { return Results.Json(new { error = e.Message }, statusCode: 422); }
 });
 
 api.MapGet("/clientes/{slug}/recomendacoes", async (string slug, HttpContext c, Escopo escopo, Automacao automacao) =>

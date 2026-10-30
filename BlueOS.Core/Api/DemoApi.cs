@@ -85,6 +85,22 @@ public sealed class DemoApi : IBlueApi
         return Task.CompletedTask;
     }
 
+    public Task<IReadOnlyList<FormularioDaMeta>> ListarFormulariosAsync(Cliente c)
+    {
+        /* Na demonstração, a Meta devolve o formulário que a régua do cliente já conhece (ou um genérico do nicho). */
+        var perguntas = (c.Regua?.Perguntas.Count > 0 ? c.Regua.Perguntas : ReguaDeSeguros().Perguntas)
+            .Select(p => new PerguntaDoFormulario(p.Nome, p.Rotulo ?? p.Nome, "CUSTOM",
+                p.Forte.Concat(p.Media).Concat(p.Elim).Select(v => new OpcaoDoFormulario(v, v)).ToList()))
+            .Concat([new PerguntaDoFormulario("nome_completo", "Full name", "FULL_NAME", []), new PerguntaDoFormulario("email", "Email", "EMAIL", []), new PerguntaDoFormulario("telefone", "Phone number", "PHONE", [])])
+            .ToList();
+        var lista = new List<FormularioDaMeta>
+        {
+            new("120" + Math.Abs(c.Slug.GetHashCode()), $"{c.Nome} - Formulário Leads Instagram", "ACTIVE", 34, DateTime.Now.AddDays(-3), perguntas),
+            new("119" + Math.Abs(c.Slug.GetHashCode()), $"[\U0001F30A Blue] [FORM-L] régua v2", "ARCHIVED", 0, DateTime.Now.AddDays(-9), perguntas),
+        };
+        return De<IReadOnlyList<FormularioDaMeta>>(lista);
+    }
+
     /* ---- assets -------------------------------------------------------------- */
 
     public Task<Asset> SubirAssetAsync(Cliente c, TipoDeAsset tipo, string nome, string mime, byte[] bytes)

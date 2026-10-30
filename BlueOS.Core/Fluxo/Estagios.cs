@@ -19,7 +19,7 @@ public static class Estagios
     [
         new(Estagio.Chegada, "Chegada do cliente", "Chegada", "O cliente entrou. O primeiro passo é cadastrar os assets."),
         new(Estagio.Assets, "Assets do cliente", "Assets", "Logo, telas do produto, conta de anúncios, página e o token do squad."),
-        new(Estagio.Ficha, "Ficha do cliente", "Ficha", "Tudo o que a ficha de cliente já pergunta: cadastro, ICP, produto, estratégia, nicho, budget e critério de MQL."),
+        new(Estagio.Ficha, "Ficha do cliente", "Ficha", "O que o agente precisa: o card Tráfego (nicho e budget) e o critério de MQL (o formulário da Meta e o teto). Cadastro, ICP, produto e estratégia ficam aqui também, sem travar o fluxo."),
         new(Estagio.Copy, "Copy por nicho", "Copy", "O agente escreve as peças de TOFU, MOFU e BOFU que a faixa do budget pede. Você revisa e aprova."),
         new(Estagio.Design, "Design dos criativos", "Design", "O agente gera as artes das peças aprovadas. Você escolhe o criativo piloto."),
         new(Estagio.Campanha, "Campanha (Start)", "Campanha", "A estrutura sai pronta pelo budget e pelo nicho, e vai para a Meta pausada."),
@@ -38,14 +38,11 @@ public static class Estagios
         return (p.Count == 0, p);
     }
 
+    /// <summary>O que trava o fluxo na ficha: só o card Tráfego e o critério de MQL (Igor, 29/10/2026).
+    /// Cadastro, ICP, produto e estratégia continuam na ficha, mas não seguram o agente.</summary>
     public static (bool Ok, List<string> Pendencias) FichaCompleta(Cliente c)
     {
         var p = new List<string>();
-        if (string.IsNullOrWhiteSpace(c.Ficha.Responsavel)) p.Add("responsável");
-        if (string.IsNullOrWhiteSpace(c.Icp.CargoDecisor)) p.Add("cargo decisor do ICP");
-        if (c.Icp.DoresPrincipais.Count == 0) p.Add("dores do ICP");
-        if (string.IsNullOrWhiteSpace(c.Produto.NomeCorreto)) p.Add("nome do produto");
-        if (string.IsNullOrWhiteSpace(c.Estrategia.PromessaPrincipal)) p.Add("promessa principal");
         if (!Nichos.Valido(c.NichoSlug)) p.Add("nicho");
         if (c.BudgetMensal is null or <= 0) p.Add("budget mensal");
         if (c.Regua is null || c.Regua.Perguntas.Count == 0) p.Add("régua de MQL");

@@ -41,9 +41,12 @@ topo e cada etapa rende abaixo.
 2. **Assets**: logo principal, logo variação, telas do produto (bucket `brand-assets`), conta
    de anúncios (`act_`), página, token do squad conferido na Meta, lista do cliente, site/pixel,
    política de privacidade e link.
-3. **Ficha**: cadastro, ICP, produto, estratégia, o card Tráfego (nicho e budget mensal) e o
-   critério de MQL (régua v2 e teto por MQL do PPL). São os mesmos campos do card do cliente
-   do V1.
+3. **Ficha**: o que trava o fluxo é só o card Tráfego (nicho e budget mensal) e o critério de
+   MQL (régua v2 e teto por MQL do PPL). Cadastro, ICP, produto e estratégia continuam na ficha,
+   mas são opcionais. A régua se monta a partir do **formulário da Meta**: a API lê os
+   formulários de cadastro da página do cliente (token do squad trocado pelo token de página),
+   o gestor escolhe o formulário e marca cada resposta como forte, média ou eliminatória; a
+   régua grava a chave da resposta como a Meta entrega no lead, igual ao V1.
 4. **Copy**: o agente escreve as peças das etapas que a **faixa do budget** pede (f1: só MOFU;
    f2: MOFU e BOFU; f3: TOFU, MOFU e BOFU), com a estrutura declarada (ângulo, papel da sub,
    tipo de CTA) e o crivo em código (régua V8 e regras fechadas do vault). O gestor aprova.
@@ -121,6 +124,7 @@ existirem aqui.
 | `GET /api/clientes/{slug}` | o cliente completo, com as artes do Designer e as recomendações com estado |
 | `GET /api/clientes/{slug}/ongoing` | KPIs do mês, conjuntos, leads pela régua e o que o agente fez |
 | `GET /api/clientes/{slug}/estrutura` | o Start, calculado pelo planejador portado |
+| `GET /api/clientes/{slug}/formularios` | os formulários de cadastro da página do cliente na Meta, com perguntas e opções (tenta o token do squad do cliente, depois os dos outros squads; 422 quando nenhum administra a página) |
 | `POST .../trafego`, `POST .../mql`, `PATCH .../ficha`, `PATCH .../modo` | as escritas, cada campo onde já morava no V1 |
 | `GET/PATCH /api/motor/chave-geral`, `POST .../recomendacoes/{id}/decisao` | a chave geral e a decisão do gestor (negar, ou aceitar o que não escreve na Meta) |
 

@@ -2,8 +2,10 @@
 <div class="abas-ficha" role="tablist">
     @foreach (var s in Secoes)
     {
-        <button type="button" role="tab" class="chip @(secao == s ? "ativo" : "")" @onclick="() => secao = s">@s</button>
+        var principal = s is "Tráfego" or "Critério de MQL";
+        <button type="button" role="tab" class="chip @(secao == s ? "ativo" : "") @(principal ? "chip-principal" : "")" @onclick="() => secao = s" title="@(principal ? "obrigatório para o agente" : "opcional: não trava o fluxo")">@s@(principal && Pendente(s) ? " ●" : "")</button>
     }
+    <span class="text-3 mini">Tráfego e Critério de MQL são o que o agente precisa; o resto é opcional.</span>
 </div>
 
 @if (secao == "Cadastro")
@@ -95,6 +97,56 @@ else
 {
     <div class="caixa">
         <p class="text-3 mini">A régua v2 é a contagem oficial de MQL (PEND-001): cada resposta do formulário é forte, média ou eliminatória. 2 ou mais fortes = tier A, 1 = B, 0 = C. O teto por MQL é o do PPL deste cliente: sem ele o motor não corta, não escala e não troca criativo.</p>
+
+        <h3>Pelo formulário da Meta</h3>
+        <div class="acoes">
+            <button type="button" class="btn btn-destaque" @onclick="BuscarFormularios" disabled="@ocupado">@(ocupado && formularios is null ? "Buscando…" : "Buscar formulários da página na Meta")</button>
+            <span class="text-3 mini">lê os formulários de cadastro da página do cliente com o token do squad; você escolhe um e marca o que cada resposta vale</span>
+        </div>
+        @if (formularios is { Count: 0 }) { <p class="warn mini">a página não tem formulário de cadastro.</p> }
+        @if (formularios is { Count: > 0 })
+        {
+            <label>Formulário
+                <select @bind="formularioId">
+                    @foreach (var f in formularios) { <option value="@f.Id">[@f.Status] @f.Nome · @f.Leads leads · @(f.CriadoEm?.ToString("dd/MM") ?? "")</option> }
+                </select>
+            </label>
+            @if (FormularioEscolhido is { } fe)
+            {
+                var deEscolha = fe.Perguntas.Where(p => p.Opcoes.Count > 0).ToList();
+                @if (deEscolha.Count == 0) { <p class="warn mini">este formulário não tem pergunta de múltipla escolha: a régua precisa de respostas fechadas.</p> }
+                @foreach (var p in deEscolha)
+                {
+                    <div class="pergunta-form">
+                        <div><strong>@p.Rotulo</strong> <span class="text-3 mini">campo <code>@p.Chave</code></span></div>
+                        <table class="tabela compacta">
+                            <thead><tr><th>Resposta</th><th>Forte</th><th>Média</th><th>Eliminatória</th><th>Ignorar</th></tr></thead>
+                            <tbody>
+                                @foreach (var o in p.Opcoes)
+                                {
+                                    var k = p.Chave + "\u0001" + o.Valor;
+                                    var atual = classe.GetValueOrDefault(k, "ignorar");
+                                    <tr>
+                                        <td>@o.Valor</td>
+                                        @foreach (var cl in new[] { "forte", "media", "elim", "ignorar" })
+                                        {
+                                            <td><input type="radio" name="@k" checked="@(atual == cl)" @onchange="() => classe[k] = cl" /></td>
+                                        }
+                                    </tr>
+                                }
+                            </tbody>
+                        </table>
+                    </div>
+                }
+                <div class="acoes">
+                    <button type="button" class="btn btn-destaque" @onclick="MontarReguaDoFormulario" disabled="@(deEscolha.Count == 0)">Montar a régua com essas escolhas</button>
+                    <span class="text-3 mini">a régua aparece na tabela abaixo para você conferir e salvar</span>
+                </div>
+            }
+        }
+        @if (erroFormularios is not null) { <p class="erro">@erroFormularios</p> }
+
+        <h3 class="mt">A régua</h3>
         <table class="tabela regua">
             <thead><tr><th>Nome do campo (como a Meta entrega)</th><th>Pergunta (rótulo)</th><th>Fortes</th><th>Médias</th><th>Eliminatórias</th><th></th></tr></thead>
             <tbody>
@@ -151,6 +203,71 @@ else
     List<PerguntaDaRegua> rascunho = new();
     Cliente? visto;
 
+    /* ---- o formulário da Meta como origem da régua ---------------------------- */
+    List<FormularioDaMeta>? formularios;
+    string? formularioId;
+    string? erroFormularios;
+    /// <summary>A classe escolhida por (campo, resposta): forte | media | elim | ignorar.</summary>
+    readonly Dictionary<string, string> classe = new();
+    FormularioDaMeta? FormularioEscolhido => formularios?.FirstOrDefault(f => f.Id == formularioId);
+
+    async Task BuscarFormularios()
+    {
+        erroFormularios = null; ocupado = true;
+        try
+        {
+            formularios = (await Api.ListarFormulariosAsync(Cliente)).ToList();
+            formularioId = formularios.FirstOrDefault()?.Id;
+            PreencherDaReguaAtual();
+        }
+        catch (Exception ex) { erroFormularios = ex.Message; }
+        finally { ocupado = false; }
+    }
+
+    /// <summary>Se a régua gravada já classifica respostas deste formulário, as marcas aparecem preenchidas.</summary>
+    void PreencherDaReguaAtual()
+    {
+        classe.Clear();
+        if (Cliente.Regua is null || FormularioEscolhido is null) return;
+        foreach (var p in FormularioEscolhido.Perguntas)
+        {
+            var q = Cliente.Regua.Perguntas.FirstOrDefault(x => Regua.Normalizar(x.Nome) == Regua.Normalizar(p.Chave) || x.Chaves.Any(c => Regua.Normalizar(c) == Regua.Normalizar(p.Chave)));
+            if (q is null) continue;
+            foreach (var o in p.Opcoes)
+            {
+                /* a régua gravada pode ter a chave ou o rótulo da opção: os dois normalizam igual (regua/normalizar.ts) */
+                var ns = new[] { Regua.Normalizar(o.Chave), Regua.Normalizar(o.Valor) };
+                bool Tem(List<string> l) => l.Any(v => ns.Contains(Regua.Normalizar(v)));
+                var cl = Tem(q.Elim) ? "elim" : Tem(q.Forte) ? "forte" : Tem(q.Media) ? "media" : null;
+                if (cl is not null) classe[p.Chave + "\u0001" + o.Valor] = cl;
+            }
+        }
+    }
+
+    static string ValorDaRegua(OpcaoDoFormulario o) => string.IsNullOrWhiteSpace(o.Chave) ? o.Valor : o.Chave;
+
+    void MontarReguaDoFormulario()
+    {
+        if (FormularioEscolhido is null) return;
+        var nova = new List<PerguntaDaRegua>();
+        foreach (var p in FormularioEscolhido.Perguntas.Where(x => x.Opcoes.Count > 0))
+        {
+            var q = new PerguntaDaRegua { Nome = p.Chave, Rotulo = p.Rotulo };
+            foreach (var o in p.Opcoes)
+                switch (classe.GetValueOrDefault(p.Chave + "\u0001" + o.Valor, "ignorar"))
+                {
+                    /* grava a chave da opção (é o que a Meta entrega em cada lead), como o V1 faz; o rótulo é só exibição */
+                    case "forte": q.Forte.Add(ValorDaRegua(o)); break;
+                    case "media": q.Media.Add(ValorDaRegua(o)); break;
+                    case "elim": q.Elim.Add(ValorDaRegua(o)); break;
+                }
+            if (q.Forte.Count + q.Media.Count + q.Elim.Count > 0) nova.Add(q);
+        }
+        if (nova.Count == 0) { erroFormularios = "marque pelo menos uma resposta como forte, média ou eliminatória."; return; }
+        erroFormularios = null;
+        rascunho = nova;
+    }
+
     protected override void OnParametersSet()
     {
         if (ReferenceEquals(visto, Cliente)) return;
@@ -164,18 +281,17 @@ else
         teto = Dinheiro.NoCampo(Cliente.TetoMql);
         rascunho = Cliente.Regua?.Perguntas.Select(p => p.Clonar()).ToList() ?? new();
         if (rascunho.Count == 0) rascunho.Add(new PerguntaDaRegua());
-        var (ok, _) = Estagios.FichaCompleta(Cliente);
-        secao = ok ? "Tráfego" : Secoes.First(s => Pendente(s));
+        formularios = null; formularioId = null; classe.Clear(); erroFormularios = null;
+        /* O que trava o fluxo é o card Tráfego e o critério de MQL: a ficha abre neles. */
+        secao = Pendente("Tráfego") ? "Tráfego" : Pendente("Critério de MQL") ? "Critério de MQL" : "Tráfego";
     }
 
+    /// <summary>Só Tráfego e Critério de MQL seguram o agente; o resto é cadastro opcional.</summary>
     bool Pendente(string s) => s switch
     {
-        "Cadastro" => string.IsNullOrWhiteSpace(Cliente.Ficha.Responsavel),
-        "ICP" => string.IsNullOrWhiteSpace(Cliente.Icp.CargoDecisor) || Cliente.Icp.DoresPrincipais.Count == 0,
-        "Produto" => string.IsNullOrWhiteSpace(Cliente.Produto.NomeCorreto),
-        "Estratégia" => string.IsNullOrWhiteSpace(Cliente.Estrategia.PromessaPrincipal),
         "Tráfego" => Cliente.NichoSlug is null || Cliente.BudgetMensal is null,
-        _ => true,
+        "Critério de MQL" => Cliente.Regua is null || Cliente.Regua.Perguntas.Count == 0 || Cliente.TetoMql is null,
+        _ => false,
     };
 
     static List<string> Lista(ChangeEventArgs e) => (e.Value?.ToString() ?? "").Split(',').Select(x => x.Trim()).Where(x => x != "").ToList();
