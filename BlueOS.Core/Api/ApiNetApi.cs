@@ -105,8 +105,9 @@ public sealed class ApiNetApi : IBlueApi, IDisposable
     public async Task<Cliente?> ObterClienteAsync(string slug)
     {
         var c = await Get<Cliente>($"api/clientes/{Uri.EscapeDataString(slug)}");
-        /* O que é local ao desktop (piloto, lotes de copy gerados aqui) sobrevive à releitura. */
-        if (_cache.TryGetValue(slug, out var antigo)) { c.ArtePilotoId = antigo.ArtePilotoId; c.Lotes = antigo.Lotes; c.Conjuntos = antigo.Conjuntos; }
+        /* O que é local ao desktop (piloto, conjuntos lidos no ongoing) sobrevive à releitura; os lotes de copy
+           agora vêm da API (copy_lote), então a releitura é a verdade. */
+        if (_cache.TryGetValue(slug, out var antigo)) { c.ArtePilotoId = antigo.ArtePilotoId; c.Conjuntos = antigo.Conjuntos; }
         _cache[slug] = c;
         return c;
     }
@@ -198,7 +199,11 @@ public sealed class ApiNetApi : IBlueApi, IDisposable
     public Task<EstadoDoToken> GravarTokenDoSquadAsync(Cliente c, string token) => V1.GravarTokenDoSquadAsync(c, token);
     public Task<LoteDeCopy> GerarCopyAsync(Cliente c, IReadOnlyList<GeradorDemo.Pedido> pedido, string? briefing) => V1.GerarCopyAsync(c, pedido, briefing);
     public Task AjustarPecaAsync(Cliente c, string pecaId, string instrucao) => V1.AjustarPecaAsync(c, pecaId, instrucao);
-    public Task AprovarPecaAsync(Cliente c, string pecaId, bool aprovada) { c.Pecas.First(x => x.Id == pecaId).Aprovada = aprovada; Avisar(); return Task.CompletedTask; }
+    public async Task AprovarPecaAsync(Cliente c, string pecaId, bool aprovada)
+    {
+        await Envie(HttpMethod.Patch, $"api/clientes/{Uri.EscapeDataString(c.Slug)}/pecas/{Uri.EscapeDataString(pecaId)}", new { aprovada });
+        c.Pecas.First(x => x.Id == pecaId).Aprovada = aprovada; Avisar();
+    }
     public Task<IReadOnlyList<Arte>> GerarArtesAsync(Cliente c, IReadOnlyList<string> pecaIds, IReadOnlyList<string> formatos) => V1.GerarArtesAsync(c, pecaIds, formatos);
     public Task AprovarArteAsync(Cliente c, string arteId, bool aprovada) { c.Artes.First(a => a.Id == arteId).Aprovada = aprovada; Avisar(); return Task.CompletedTask; }
     public Task EscolherPilotoAsync(Cliente c, string? arteId) { c.ArtePilotoId = arteId; Avisar(); return Task.CompletedTask; }

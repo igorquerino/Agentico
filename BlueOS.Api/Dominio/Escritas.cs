@@ -27,6 +27,19 @@ public sealed class Escritas(Db db)
     static readonly ResultadoDaEscrita Feito = new(true);
     static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
 
+    /// <summary>Aprovar uma peça de copy é decisão de gente (AD-5): copy_peca.aprovada, só se a peça é deste cliente.</summary>
+    public async Task<ResultadoDaEscrita> AprovarPecaAsync(string slug, string pecaId, bool aprovada)
+    {
+        if (!Guid.TryParse(pecaId, out var id)) return new(false, "id da peça inválido");
+        var ok = await db.ListaAsync(Sql.Fmt($"""
+            update public.copy_peca p set aprovada = {aprovada}
+            from public.copy_lote_item i join public.copy_lote l on l.lote_id = i.lote_id join public.clientes c on c.cliente_id = l.cliente_id
+            where p.item_id = i.item_id and p.peca_id = {id} and c.cliente_slug = {slug}
+            returning p.peca_id::text as peca_id
+            """));
+        return ok.Count == 0 ? new(false, "a peça não é deste cliente", 404) : Feito;
+    }
+
     public async Task<ResultadoDaEscrita> CardTrafegoAsync(EscopoDaSessao esc, string slug, string? nichoSlug, decimal? budget)
     {
         if (nichoSlug is not null && nichoSlug != "" && !Nichos.Valido(nichoSlug)) return new(false, $"nicho desconhecido: {nichoSlug}");

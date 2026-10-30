@@ -197,6 +197,14 @@ api.MapPatch("/clientes/{slug}/ficha", async (string slug, FichaPedido p, HttpCo
     return r.Ok ? Results.Ok(new { ok = true }) : Results.Json(new { error = r.Erro }, statusCode: r.Status);
 });
 
+api.MapPatch("/clientes/{slug}/pecas/{id}", async (string slug, string id, PecaPedido p, HttpContext c, Escopo escopo, Escritas escritas) =>
+{
+    var esc = await escopo.DoUsuarioAsync(UserId(c));
+    if (!await escopo.AlcancaAsync(esc, slug)) return Results.Json(new { error = "cliente fora do seu escopo" }, statusCode: 403);
+    var r = await escritas.AprovarPecaAsync(slug, id, p.Aprovada);
+    return r.Ok ? Results.Ok(new { ok = true }) : Results.Json(new { error = r.Erro }, statusCode: r.Status);
+});
+
 api.MapPatch("/clientes/{slug}/modo", async (string slug, ModoPedido p, HttpContext c, Escopo escopo, Escritas escritas) =>
 {
     var esc = await escopo.DoUsuarioAsync(UserId(c));
@@ -227,4 +235,5 @@ public sealed record MqlPedido(ReguaV2? Regua, decimal? TetoMql);
 public sealed record ModoPedido(ModoDeExecucao Modo);
 public sealed record ChaveGeralPedido(bool Ligada, string? Motivo);
 public sealed record DecisaoPedido(bool Aceita, string? Motivo);
+public sealed record PecaPedido(bool Aprovada);
 public sealed record FichaPedido(FichaCadastral? Ficha, Icp? Icp, Produto? Produto, Estrategia? Estrategia);

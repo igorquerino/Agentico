@@ -28,6 +28,13 @@ public sealed class Carteira(Db db)
                   from (select x.id, y.numero as lote, x.numero, x.funil, x.formato, x.storage_url, x.created_at
                         from public.designer_pecas x join public.designer_lotes y on y.id = x.lote_id
                         where y.cliente_id = c.cliente_id and x.storage_url is not null order by x.created_at desc limit 60) p)::text as artes,
+               (select json_agg(json_build_object('lote_id', l.lote_id, 'nome', l.nome, 'briefing', l.briefing, 'modelo', l.modelo, 'criado_em', l.criado_em,
+                        'tokens_in', l.tokens_in, 'tokens_out', l.tokens_out,
+                        'pecas', (select json_agg(json_build_object('peca_id', p.peca_id, 'tipo', i.tipo, 'funil', i.funil, 'ordem', p.ordem, 'headline', p.headline,
+                                    'corpo', p.corpo, 'cta', p.cta, 'aprovada', p.aprovada, 'crivo_ok', p.crivo_ok, 'angulo_headline', p.angulo_headline,
+                                    'papel_sub', p.papel_sub, 'tipo_cta', p.tipo_cta) order by i.tipo, i.funil, p.ordem)
+                                  from public.copy_lote_item i join public.copy_peca p on p.item_id = i.item_id where i.lote_id = l.lote_id)) order by l.criado_em)
+                  from (select * from public.copy_lote k where k.cliente_id = c.cliente_id order by k.criado_em desc limit 20) l)::text as lotes,
                (select json_agg(r order by r.criado_em desc) from (
             """ + Automacao.RecsSql("c.cliente_slug") + """
                ) r)::text as recomendacoes
@@ -140,6 +147,33 @@ public sealed class Carteira(Db db)
                     TamanhoBytes = a.TryGetProperty("tamanho_bytes", out var t) ? Num(a, "tamanho_bytes") : 0,
                     Origem = Str(a, "origem") ?? "manual", EmUso = a.TryGetProperty("em_uso", out var u) && u.ValueKind == JsonValueKind.True,
                 });
+            }
+        }
+        /* Os lotes de copy (só no detalhe): do mais antigo ao mais novo na consulta, o número é a posição;
+           na lista do cliente o mais novo vem primeiro, como o desktop já faz ao gerar. */
+        var lotes = r.Json("lotes");
+        if (!string.IsNullOrWhiteSpace(lotes))
+        {
+            var n = 0;
+            foreach (var l in JsonDocument.Parse(lotes).RootElement.EnumerateArray())
+            {
+                var lote = new LoteDeCopy
+                {
+                    Id = Str(l, "lote_id") ?? "", Numero = ++n, Modelo = Str(l, "modelo") ?? "", Briefing = Str(l, "briefing"), NichoSlug = c.NichoSlug,
+                    CriadoEm = DateTime.TryParse(Str(l, "criado_em"), out var dt) ? dt : DateTime.MinValue, TokensIn = (int)Num(l, "tokens_in"), TokensOut = (int)Num(l, "tokens_out"),
+                };
+                if (l.TryGetProperty("pecas", out var ps) && ps.ValueKind == JsonValueKind.Array)
+                    foreach (var p in ps.EnumerateArray())
+                        lote.Pecas.Add(new PecaDeCopy
+                        {
+                            Id = Str(p, "peca_id") ?? "", Etapa = Enum.TryParse<Etapa>(Str(p, "funil"), true, out var et) ? et : Etapa.MOFU,
+                            Tipo = Str(p, "tipo") == "video" ? TipoPeca.Video : TipoPeca.Estatico, Numero = (int)Num(p, "ordem"),
+                            Headline = Str(p, "headline") ?? "", Sub = Str(p, "corpo") ?? "", Cta = Str(p, "cta") ?? "",
+                            AnguloHeadline = Str(p, "angulo_headline") ?? "outro", PapelSub = Str(p, "papel_sub") ?? "fragmento", TipoCta = Str(p, "tipo_cta") ?? "outro",
+                            Aprovada = p.TryGetProperty("aprovada", out var ap) && ap.ValueKind == JsonValueKind.True,
+                            CrivoOk = !(p.TryGetProperty("crivo_ok", out var ck) && ck.ValueKind == JsonValueKind.False),
+                        });
+                c.Lotes.Insert(0, lote);
             }
         }
         var pub = r.Json("publicacao");

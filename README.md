@@ -50,7 +50,13 @@ topo e cada etapa rende abaixo.
 4. **Copy**: o agente escreve as peças das etapas que a **faixa do budget** pede (f1: só MOFU;
    f2: MOFU e BOFU; f3: TOFU, MOFU e BOFU), com a estrutura declarada (ângulo, papel da sub,
    tipo de CTA) e o crivo em código (régua V8 e regras fechadas do vault). O gestor aprova.
-5. **Design**: as artes das peças aprovadas (feed e story) e a escolha do criativo piloto.
+5. **Design**: as artes das peças aprovadas (feed e story) e a escolha do criativo piloto. Nas
+   fontes reais o botão Gerar chama o **Agente Designer do V1** (`POST /api/designer/gerar`):
+   uma chamada abre o lote da geração e devolve o plano, depois uma chamada por peça e
+   formato gera a imagem com o modelo de imagem (OpenAI gpt-image, `OPENAI_API_KEY` no
+   ambiente do V1). Cada arte entra na galeria assim que fica pronta; as já existentes vêm
+   da biblioteca do Designer. Os lotes de copy do cliente vêm do V1 (`/api/os/copy/lotes`)
+   ou da API .NET, e aprovar uma peça grava em `copy_peca.aprovada`.
 6. **Campanha (Start)**: a estrutura proposta pelo planejador (faixa, conjuntos, públicos,
    verba por dia, nomes da Meta, MQL esperado) e o Publicar, tudo PAUSED, com o link do
    Gerenciador.
@@ -125,7 +131,7 @@ existirem aqui.
 | `GET /api/clientes/{slug}/ongoing` | KPIs do mês, conjuntos, leads pela régua e o que o agente fez |
 | `GET /api/clientes/{slug}/estrutura` | o Start, calculado pelo planejador portado |
 | `GET /api/clientes/{slug}/formularios` | os formulários de cadastro da página do cliente na Meta, com perguntas e opções (tenta o token do squad do cliente, depois os dos outros squads; 422 quando nenhum administra a página) |
-| `POST .../trafego`, `POST .../mql`, `PATCH .../ficha`, `PATCH .../modo` | as escritas, cada campo onde já morava no V1 |
+| `POST .../trafego`, `POST .../mql`, `PATCH .../ficha`, `PATCH .../modo`, `PATCH .../pecas/{id}` | as escritas, cada campo onde já morava no V1 (a última aprova uma peça de copy) |
 | `GET/PATCH /api/motor/chave-geral`, `POST .../recomendacoes/{id}/decisao` | a chave geral e a decisão do gestor (negar, ou aceitar o que não escreve na Meta) |
 
 Configuração: copie `BlueOS.Api/appsettings.Local.exemplo.json` para `appsettings.Local.json`

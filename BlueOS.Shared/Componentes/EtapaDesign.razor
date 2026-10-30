@@ -17,9 +17,9 @@
             <label class="opcao"><input type="checkbox" @bind="story" /> story 1080x1920</label>
         </div>
         <div class="acoes">
-            <button type="button" class="btn btn-destaque" @onclick="Gerar" disabled="@(ocupado || escolhidas.Count == 0 || (!feed && !story))">@(ocupado ? "Gerando…" : $"Gerar {escolhidas.Count * ((feed ? 1 : 0) + (story ? 1 : 0))} arte(s)")</button>
+            <button type="button" class="btn btn-destaque" @onclick="Gerar" disabled="@(ocupado || escolhidas.Count == 0 || (!feed && !story))">@(ocupado ? (Api.EhDemo ? "Gerando…" : "Gerando… de 1 a 3 min por arte") : $"Gerar {escolhidas.Count * ((feed ? 1 : 0) + (story ? 1 : 0))} arte(s)")</button>
         </div>
-        <p class="text-3 mini">@(Api.EhDemo ? "Demonstração: a arte é diagramada em SVG (HEAD, SUB, CTA e marca). No V1 a imagem sai do modelo de imagem do Designer e o texto é carimbado em camadas." : "No V1 as artes vêm da biblioteca do Designer (/api/trafego/pecas-designer).")</p>
+        <p class="text-3 mini">@(Api.EhDemo ? "Demonstração: a arte é diagramada em SVG (HEAD, SUB, CTA e marca). Nas fontes reais a imagem sai do Agente Designer." : "O Agente Designer do V1 desenha cada arte com o modelo de imagem (gpt-image) a partir da copy escolhida, uma chamada por arte e formato. Cada arte entra na galeria assim que fica pronta; as já existentes vêm da biblioteca do Designer.")</p>
     </div>
     <div class="caixa">
         <h3>Criativo piloto</h3>

@@ -25,6 +25,10 @@ namespace BlueOS.Core.Api;
      POST /api/trafego/conectar-conta            { cliente_slug, ad_account_id | desconectar }
      GET  /api/trafego/token-meta                → squads[] com valido
      POST /api/os/copy/gerar                     { cliente_id, itens[], briefing? }
+     GET  /api/os/copy/lotes?cliente_id=         → lotes[] (lote_id, itens[tipo, funil, pecas[peca_id, ordem, headline, corpo, cta, aprovada]])
+     PATCH /api/os/copy/peca/{id}                { aprovada }
+     POST /api/designer/gerar                    plano: { cliente, lote_id, formato, nova_geracao } → { lote_id, pecas[funil, numero, head] }
+                                                 peça:  { cliente, lote_id, designer_lote_id, formato, peca{funil, numero, formato} } → { pecas[id, formato, url], falhas[] }
      GET  /api/trafego/pecas-designer?cliente=   → pecas[] (id, titulo, lote, url)
      GET  /api/trafego/motor/estrutura?cliente=  → { ok, estrutura } | { ok:false, falta, motivo }
      POST /api/trafego/motor/publicar            { cliente_slug, designer_peca_id, texto?, politica_url?, link?, formulario_id? }
@@ -200,6 +204,7 @@ public sealed class V1Api : IBlueApi, IDisposable
                 c.Artes.Clear();
                 c.Artes.AddRange(lidas);
             }),
+            Seguro(() => LerCopyAsync(c)),
             Seguro(() => ListarRecomendacoesAsync(c)));
         /* Se NADA veio (dev server travado, sessão caída), a tela precisa saber: o erro sobe. */
         if (primeiroErro is not null && c.Ficha.Responsavel is null && c.NichoSlug is null && c.Assets.Count == 0)
@@ -254,6 +259,47 @@ public sealed class V1Api : IBlueApi, IDisposable
             },
         });
         Avisar();
+    }
+
+    /// <summary>Os lotes de copy do cliente (GET /api/os/copy/lotes): é deles que o Designer desenha. O número do lote
+    /// é a posição cronológica (o mais antigo é o 1); o número da peça é a `ordem` dentro do item, que é o que
+    /// a rota do Designer chama de `numero`.</summary>
+    async Task LerCopyAsync(Cliente c)
+    {
+        var j = await Get($"api/os/copy/lotes?cliente_id={Uri.EscapeDataString(c.Id)}");
+        var lidos = Lista(j, "lotes").ToList();   /* o V1 devolve do mais novo para o mais antigo */
+        var lotes = new List<LoteDeCopy>();
+        for (var i = 0; i < lidos.Count; i++)
+        {
+            var l = lidos[i];
+            var lote = new LoteDeCopy
+            {
+                Id = S(l, "lote_id") ?? Guid.NewGuid().ToString("n"), Numero = lidos.Count - i, Modelo = S(l, "modelo") ?? "", Briefing = S(l, "briefing"),
+                CriadoEm = DateTime.TryParse(S(l, "criado_em"), out var dt) ? dt.ToLocalTime() : DateTime.MinValue,
+                TokensIn = (int)(D(l, "tokens_in") ?? 0), TokensOut = (int)(D(l, "tokens_out") ?? 0), VaultSha = Parametros.VaultSha, NichoSlug = c.NichoSlug,
+            };
+            foreach (var item in Lista(l, "itens"))
+            {
+                var etapa = (S(item, "funil") ?? "mofu").ToUpperInvariant() switch { "TOFU" => Etapa.TOFU, "BOFU" => Etapa.BOFU, _ => Etapa.MOFU };
+                var tipo = S(item, "tipo") == "video" ? TipoPeca.Video : TipoPeca.Estatico;
+                foreach (var p in Lista(item, "pecas"))
+                {
+                    var id = S(p, "peca_id") ?? Guid.NewGuid().ToString("n");
+                    var local = c.Pecas.FirstOrDefault(x => x.Id == id);
+                    lote.Pecas.Add(new PecaDeCopy
+                    {
+                        Id = id, Etapa = etapa, Tipo = tipo, Numero = (int)(D(p, "ordem") ?? lote.Pecas.Count + 1),
+                        Headline = S(p, "headline") ?? "", Sub = S(p, "corpo") ?? "", Cta = S(p, "cta") ?? "",
+                        /* o histórico não traz as etiquetas nem o crivo: o que já estava em memória (lote gerado aqui) fica */
+                        AnguloHeadline = local?.AnguloHeadline ?? "outro", PapelSub = local?.PapelSub ?? "fragmento", TipoCta = local?.TipoCta ?? "outro",
+                        CrivoOk = local?.CrivoOk ?? true, MotivoDoCrivo = local?.MotivoDoCrivo, Hipotese = local?.Hipotese ?? "",
+                        Aprovada = B(p, "aprovada") ?? local?.Aprovada ?? false,
+                    });
+                }
+            }
+            lotes.Add(lote);
+        }
+        c.Lotes = lotes;
     }
 
     /// <summary>A ficha inteira vem de GET /detalhe: cadastro, contrato, ICP, recorte, produto e estratégia.</summary>
@@ -411,7 +457,8 @@ public sealed class V1Api : IBlueApi, IDisposable
             {
                 lote.Pecas.Add(new PecaDeCopy
                 {
-                    Id = S(p, "peca_id") ?? S(p, "id") ?? Guid.NewGuid().ToString("n"), Etapa = etapa, Tipo = tipo, Numero = ++n,
+                    /* o número da peça é a `ordem` do V1 (é por ela que o Designer acha a copy); o contador só cobre resposta antiga */
+                    Id = S(p, "peca_id") ?? S(p, "id") ?? Guid.NewGuid().ToString("n"), Etapa = etapa, Tipo = tipo, Numero = (int)(D(p, "ordem") ?? ++n),
                     Headline = S(p, "headline") ?? S(p, "hook") ?? "", Sub = S(p, "sub") ?? S(p, "body") ?? S(p, "corpo") ?? "", Cta = S(p, "cta") ?? "",
                     AnguloHeadline = S(p, "angulo_headline") ?? "outro", PapelSub = S(p, "papel_sub") ?? "fragmento", TipoCta = S(p, "tipo_cta") ?? "outro",
                     CrivoOk = B(p, "crivo_ok") ?? true, MotivoDoCrivo = S(p, "crivo_motivo"), Hipotese = S(p, "hipotese") ?? "",
@@ -433,16 +480,70 @@ public sealed class V1Api : IBlueApi, IDisposable
         Avisar();
     }
 
-    public Task AprovarPecaAsync(Cliente c, string pecaId, bool aprovada)
+    /// <summary>Aprovar é decisão de gente (AD-5) e fica gravada: PATCH /api/os/copy/peca/{id} { aprovada }.</summary>
+    public async Task AprovarPecaAsync(Cliente c, string pecaId, bool aprovada)
     {
+        await Envie(HttpMethod.Patch, $"api/os/copy/peca/{Uri.EscapeDataString(pecaId)}", new { aprovada });
         c.Pecas.First(x => x.Id == pecaId).Aprovada = aprovada; Avisar();
-        return Task.CompletedTask;
     }
 
     /* ---- design -------------------------------------------------------------- */
 
-    public Task<IReadOnlyList<Arte>> GerarArtesAsync(Cliente c, IReadOnlyList<string> pecaIds, IReadOnlyList<string> formatos) =>
-        throw new NotSupportedException("gerar arte pelo desktop ainda não está ligado ao V1: gere o lote no Agente Designer (/agentes) e as peças aparecem aqui pela biblioteca (/api/trafego/pecas-designer).");
+    /* ---- o Agente Designer do V1 ---------------------------------------------
+       POST /api/designer/gerar tem dois modos (a rota explica o porquê: cada imagem
+       leva de 100 a 150 s, então o lote inteiro numa chamada só não cabe):
+         sem `peca`  + nova_geracao  -> abre um lote NOVO do Designer e devolve o plano
+                                        (funil + número de cada copy do lote)
+         com `peca`  + designer_lote_id -> gera SÓ aquela peça, naquele formato
+       A arte entra na galeria assim que a chamada volta (Avisar), uma por uma.
+       A copy identifica-se por (funil, número=ordem); o `head` do plano cobre o
+       caso de número divergente. */
+    public async Task<IReadOnlyList<Arte>> GerarArtesAsync(Cliente c, IReadOnlyList<string> pecaIds, IReadOnlyList<string> formatos)
+    {
+        var fmts = formatos.Select(f => f == "story" ? "story" : "feed").Distinct().ToList();
+        if (fmts.Count == 0) fmts.Add("feed");
+        var lotes = c.Lotes.Where(l => l.Pecas.Any(p => pecaIds.Contains(p.Id))).ToList();
+        if (lotes.Count == 0) throw new InvalidOperationException("escolha pelo menos uma peça de copy aprovada: o Designer desenha em cima do texto dela.");
+        var novas = new List<Arte>(); var falhas = new List<string>();
+        foreach (var lote in lotes)
+        {
+            var plano = await Envie(HttpMethod.Post, "api/designer/gerar", new { cliente = c.Slug, lote_id = lote.Id, formato = fmts.Count == 2 ? "ambos" : fmts[0], nova_geracao = true });
+            var designerLoteId = S(plano, "lote_id") ?? throw new InvalidOperationException("o Designer não abriu o lote da geração.");
+            var noPlano = Lista(plano, "pecas").Select(x => (Funil: S(x, "funil") ?? "", Numero: (int)(D(x, "numero") ?? 0), Head: S(x, "head") ?? "")).ToList();
+            foreach (var p in lote.Pecas.Where(p => pecaIds.Contains(p.Id)))
+            {
+                var alvo = noPlano.FirstOrDefault(x => x.Numero == p.Numero && string.Equals(x.Funil, p.Etapa.ToString(), StringComparison.OrdinalIgnoreCase));
+                if (alvo.Funil == "") alvo = noPlano.FirstOrDefault(x => x.Head.Length > 0 && p.Headline.StartsWith(x.Head, StringComparison.Ordinal));
+                if (alvo.Funil == "") { falhas.Add($"{p.Etapa} {p.Numero}: essa copy não está no lote que o Designer leu"); continue; }
+                foreach (var f in fmts)
+                {
+                    try
+                    {
+                        var r = await Envie(HttpMethod.Post, "api/designer/gerar",
+                            new { cliente = c.Slug, lote_id = lote.Id, designer_lote_id = designerLoteId, formato = f, peca = new { funil = alvo.Funil, numero = alvo.Numero, formato = f } });
+                        foreach (var s in Lista(r, "pecas"))
+                        {
+                            var formato = S(s, "formato") ?? f;
+                            var arte = new Arte
+                            {
+                                Id = S(s, "id") ?? Guid.NewGuid().ToString("n"), PecaId = p.Id, Etapa = p.Etapa, Formato = formato,
+                                Titulo = $"{p.Etapa} {p.Numero} · {formato} · copy lote {lote.Numero}", Url = S(s, "url") ?? "", Lote = lote.Numero, Aprovada = false,
+                            };
+                            c.Artes.Insert(0, arte); novas.Add(arte); Avisar();
+                        }
+                        foreach (var fl in Lista(r, "falhas")) falhas.Add($"{S(fl, "funil")} {D(fl, "numero")} {f}: {S(fl, "motivo")}");
+                    }
+                    catch (Exception e) when (e is InvalidOperationException or HttpRequestException or TaskCanceledException)
+                    {
+                        falhas.Add($"{p.Etapa} {p.Numero} {f}: {e.Message}");
+                    }
+                }
+            }
+        }
+        if (novas.Count == 0) throw new InvalidOperationException("nenhuma arte saiu. " + string.Join(" · ", falhas.Distinct()));
+        if (falhas.Count > 0) throw new InvalidOperationException($"saíram {novas.Count} arte(s), mas não saíram: {string.Join(" · ", falhas.Distinct())}");
+        return novas;
+    }
 
     public Task AprovarArteAsync(Cliente c, string arteId, bool aprovada) { c.Artes.First(a => a.Id == arteId).Aprovada = aprovada; Avisar(); return Task.CompletedTask; }
     public Task EscolherPilotoAsync(Cliente c, string? arteId) { c.ArtePilotoId = arteId; Avisar(); return Task.CompletedTask; }
