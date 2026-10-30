@@ -110,7 +110,7 @@ public sealed class Condutor(IBlueApi api)
                 Passo(PassoDoStart.Ficha, "gravando nicho e budget no card Tráfego");
                 await api.SalvarCardTrafegoAsync(c, plano.NichoSlug, plano.BudgetMensal);
             }
-            if (plano.Regua is { Perguntas.Count: > 0 } && (c.Regua is null || !ReferenceEquals(plano.Regua, c.Regua) || plano.TetoMql != c.TetoMql))
+            if (plano.Regua is { Perguntas.Count: > 0 } && (c.Regua is null || !MesmaRegua(plano.Regua, c.Regua) || plano.TetoMql != c.TetoMql))
             {
                 Passo(PassoDoStart.Ficha, "gravando o critério de MQL");
                 await api.SalvarCriterioMqlAsync(c, plano.Regua, plano.TetoMql);
@@ -182,6 +182,14 @@ public sealed class Condutor(IBlueApi api)
         catch (OperationCanceledException) { Pare("Start cancelado"); }
         catch (Exception ex) { Pare(ex.Message); }
         finally { e.EmCurso = false; e.TerminadoEm = DateTime.Now; aoMudar?.Invoke(c); }
+    }
+
+    /// <summary>A mesma régua, pelo conteúdo (a releitura do cliente cria outra instância): não regrava à toa.</summary>
+    static bool MesmaRegua(ReguaV2 a, ReguaV2 b)
+    {
+        static string Chave(ReguaV2 r) => string.Join("|", r.Perguntas.Select(p =>
+            $"{Regua.Normalizar(p.Nome)}:{string.Join(",", p.Forte.Select(Regua.Normalizar).Order())}:{string.Join(",", p.Media.Select(Regua.Normalizar).Order())}:{string.Join(",", p.Elim.Select(Regua.Normalizar).Order())}"));
+        return Chave(a) == Chave(b);
     }
 
     public static string Rotulo(ModoDeExecucao m) => m switch { ModoDeExecucao.Sombra => "sombra", ModoDeExecucao.Executa => "automático", _ => "recomenda" };
