@@ -43,7 +43,7 @@
                     @if (Cliente.PilotoDa(et) is { } pl)
                     {
                         var vaga = Assentos.First(x => x.Vaga == et);
-                        <img class="piloto" src="@pl.Url" alt="@pl.Titulo" />
+                        <img class="piloto clicavel" src="@pl.Url" alt="@pl.Titulo" title="clique para ampliar" @onclick="() => Ampliar(pl)" />
                         <p class="mini">@pl.Titulo</p>
                         <p class="mini @(vaga.Ok ? "ok" : "erro")">@(vaga.Ok ? "✓ " : "✗ ")@vaga.Motivo</p>
                         <button type="button" class="btn btn-ghost btn-mini" @onclick="() => Piloto(et, null)">tirar</button>
@@ -61,7 +61,7 @@
     @foreach (var a in Cliente.Artes)
     {
         <figure class="arte @(a.Aprovada ? "aprovada" : "") @(Cliente.Pilotos.ContainsValue(a.Id) ? "piloto" : "")">
-            <img src="@a.Url" alt="@a.Titulo" loading="lazy" />
+            <img src="@a.Url" alt="@a.Titulo" loading="lazy" class="clicavel" title="clique para ampliar" @onclick="() => Ampliar(a)" />
             <figcaption>
                 <div class="mini"><span class="pilula pilula-etapa">@a.Etapa</span> @a.Titulo@(a.Template is null ? "" : $" · {TemplatesDoDesigner.Nome(a.Template).ToLowerInvariant()}")</div>
                 <div class="acoes">
@@ -78,6 +78,8 @@
         </figure>
     }
 </div>
+
+<VisorDeArte Arte="ampliada" Posicao="@PosicaoDaAmpliada" Fechar="() => ampliada = null" Anterior="() => Navegar(-1)" Proxima="() => Navegar(+1)" />
 
 <footer class="etapa-rodape">
     @{ var (ok, pend) = Estagios.DesignPronto(Cliente, Api.Parametros); }
@@ -119,6 +121,18 @@
     }
 
     async Task Aprovar(Arte a) { erro = null; try { await Api.AprovarArteAsync(Cliente, a.Id, !a.Aprovada); } catch (Exception ex) { erro = ex.Message; } }
+    /* ---- o visor: a arte ampliada ------------------------------------------------ */
+    Arte? ampliada;
+    void Ampliar(Arte a) => ampliada = a;
+    string? PosicaoDaAmpliada => ampliada is null ? null : $"{Cliente.Artes.IndexOf(ampliada) + 1} de {Cliente.Artes.Count}";
+    /// <summary>Anterior/próxima na ordem da galeria, sem dar a volta.</summary>
+    void Navegar(int passo)
+    {
+        if (ampliada is null) return;
+        var i = Cliente.Artes.IndexOf(ampliada) + passo;
+        if (i >= 0 && i < Cliente.Artes.Count) ampliada = Cliente.Artes[i];
+    }
+
     /// <summary>As etapas que a faixa do budget pede: uma vaga de piloto para cada.</summary>
     IReadOnlyList<Etapa> Exigidas => Estagios.EtapasExigidas(Cliente, Api.Parametros);
     /// <summary>O validador de assento: cada vaga com a arte dela e o veredito (copy da etapa certa ou não).</summary>

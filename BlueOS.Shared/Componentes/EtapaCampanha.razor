@@ -64,7 +64,7 @@ else
                         <span class="pilula pilula-etapa">@et · @e.Conjuntos.Count(x => x.Etapa == et) conjunto(s)</span>
                         @if (Cliente.PilotoDa(et) is { } piloto)
                         {
-                            <img class="piloto" src="@piloto.Url" alt="@piloto.Titulo" />
+                            <img class="piloto clicavel" src="@piloto.Url" alt="@piloto.Titulo" title="clique para ampliar" @onclick="() => ampliada = piloto" />
                             <p class="mini">@piloto.Titulo</p>
                             @if (Cliente.Pecas.FirstOrDefault(p => p.Id == piloto.PecaId) is { } pc)
                             {
@@ -113,11 +113,14 @@ else
 
 @if (erro is not null) { <p class="erro" role="alert">@erro</p> }
 
+<VisorDeArte Arte="ampliada" Fechar="() => ampliada = null" />
+
 @code {
     [Parameter] public required Cliente Cliente { get; set; }
     [Parameter] public required IBlueApi Api { get; set; }
     [Parameter] public EventCallback Avancar { get; set; }
 
+    Arte? ampliada;
     EstruturaProposta? estrutura;
     string? falta; string? erro; bool ocupado;
     string politica = "", link = "", formularioId = "";

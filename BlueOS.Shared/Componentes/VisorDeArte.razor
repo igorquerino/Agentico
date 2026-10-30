@@ -1,0 +1,45 @@
+@* O visor: a arte ampliada sobre a tela. Fecha no Esc, no botão ou clicando fora; setas vão para a anterior/próxima. *@
+@if (Arte is { } a)
+{
+    <div class="visor" role="dialog" aria-label="@a.Titulo" tabindex="0" @ref="caixa" @onclick="Fechar" @onkeydown="Tecla">
+        <div class="visor-conteudo" @onclick:stopPropagation="true">
+            <img src="@a.Url" alt="@a.Titulo" class="@(a.Formato == "story" ? "story" : "feed")" />
+            <div class="visor-rodape">
+                <div class="mini"><span class="pilula pilula-etapa">@a.Etapa</span> @a.Titulo@(a.Template is null ? "" : $" · {TemplatesDoDesigner.Nome(a.Template).ToLowerInvariant()}")@(Posicao is null ? "" : $" · {Posicao}")</div>
+                <div class="acoes">
+                    @if (Anterior.HasDelegate) { <button type="button" class="btn btn-ghost btn-mini" @onclick="Anterior" title="seta para a esquerda">&larr; anterior</button> }
+                    @if (Proxima.HasDelegate) { <button type="button" class="btn btn-ghost btn-mini" @onclick="Proxima" title="seta para a direita">próxima &rarr;</button> }
+                    <button type="button" class="btn btn-mini" @onclick="Fechar">fechar (Esc)</button>
+                </div>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    [Parameter] public Arte? Arte { get; set; }
+    /// <summary>"3 de 28", quando quem abre sabe a posição na galeria.</summary>
+    [Parameter] public string? Posicao { get; set; }
+    [Parameter] public EventCallback Fechar { get; set; }
+    [Parameter] public EventCallback Anterior { get; set; }
+    [Parameter] public EventCallback Proxima { get; set; }
+
+    ElementReference caixa;
+    Arte? focada;
+
+    protected override async Task OnAfterRenderAsync(bool primeira)
+    {
+        /* o foco vai para o visor só quando ele abre (ou troca de arte), para o Esc e as setas funcionarem sem clique */
+        if (Arte is null || ReferenceEquals(focada, Arte)) return;
+        focada = Arte;
+        try { await caixa.FocusAsync(); } catch { /* o elemento pode não existir no WebView ainda; o clique fecha de qualquer jeito */ }
+    }
+
+    Task Tecla(KeyboardEventArgs e) => e.Key switch
+    {
+        "Escape" => Fechar.InvokeAsync(),
+        "ArrowLeft" when Anterior.HasDelegate => Anterior.InvokeAsync(),
+        "ArrowRight" when Proxima.HasDelegate => Proxima.InvokeAsync(),
+        _ => Task.CompletedTask,
+    };
+}

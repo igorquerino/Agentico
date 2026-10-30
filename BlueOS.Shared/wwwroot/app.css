@@ -143,6 +143,13 @@ input.curto { display: inline-block; width: 240px; margin: 0; padding: 5px 10px;
 .piloto-slot { border: 1px solid var(--border); border-radius: var(--raio); padding: 10px; display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
 .piloto-slot.vazio { border-style: dashed; }
 .validador { margin-top: 12px; border-top: 1px solid var(--border); padding-top: 10px; }
+/* o visor: a arte ampliada sobre a tela */
+.clicavel { cursor: zoom-in; }
+.visor { position: fixed; inset: 0; z-index: 1000; background: rgba(4,7,12,.86); display: flex; align-items: center; justify-content: center; outline: none; cursor: zoom-out; padding: 16px; }
+.visor-conteudo { display: flex; flex-direction: column; gap: 8px; max-width: min(94vw, 1200px); cursor: default; }
+.visor-conteudo img { display: block; max-width: 94vw; max-height: 82vh; object-fit: contain; border-radius: 12px; background: #000; box-shadow: 0 20px 60px rgba(0,0,0,.6); }
+.visor-conteudo img.feed { aspect-ratio: 1 / 1; } .visor-conteudo img.story { aspect-ratio: 9 / 16; }
+.visor-rodape { display: flex; justify-content: space-between; align-items: center; gap: 12px; color: var(--text-2); flex-wrap: wrap; }
 .assento-fora { opacity: .75; }
 .btn-erro { background: rgba(239,68,68,.18); border-color: rgba(239,68,68,.6); color: #fca5a5; }
 .piloto-slot .piloto { max-width: 100%; }
