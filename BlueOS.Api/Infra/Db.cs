@@ -1,4 +1,3 @@
-using System.Data;
 using Npgsql;
 
 namespace BlueOS.Api.Infra;
@@ -11,33 +10,52 @@ namespace BlueOS.Api.Infra;
    Formato do pooler do Supabase (a conexão direta é só IPv6, README do V1):
      Host=aws-0-sa-east-1.pooler.supabase.com;Port=6543;Database=postgres;
      Username=postgres.<ref>;Password=...;SSL Mode=Require;No Reset On Close=true
+   A leitura é preguiçosa e acompanha o arquivo: salvar a connection string no
+   appsettings.Local.json com a API no ar já basta, sem reiniciar.
    ============================================================================ */
-public sealed class Db
+public sealed class Db(IConfiguration cfg)
 {
-    readonly NpgsqlDataSource? _fonte;
-    readonly string? _erro;
+    readonly object _trava = new();
+    NpgsqlDataSource? _fonte;
+    string? _csEmUso;
 
-    public Db(IConfiguration cfg)
+    (NpgsqlDataSource? Fonte, string? Erro) Resolver()
     {
         var cs = cfg.GetConnectionString("BlueOS");
-        if (string.IsNullOrWhiteSpace(cs)) { _erro = "falta ConnectionStrings:BlueOS (appsettings.Local.json)"; return; }
-        try
+        if (string.IsNullOrWhiteSpace(cs)) return (null, "falta ConnectionStrings:BlueOS (appsettings.Local.json)");
+        lock (_trava)
         {
-            var b = new NpgsqlDataSourceBuilder(cs);
-            b.EnableDynamicJson();
-            _fonte = b.Build();
+            if (_fonte is not null && _csEmUso == cs) return (_fonte, null);
+            try
+            {
+                var b = new NpgsqlDataSourceBuilder(cs);
+                b.EnableDynamicJson();
+                var nova = b.Build();
+                var antiga = _fonte;
+                _fonte = nova; _csEmUso = cs;
+                antiga?.Dispose();
+                return (nova, null);
+            }
+            catch (Exception e) { return (null, $"connection string inválida: {e.Message}"); }
         }
-        catch (Exception e) { _erro = $"connection string inválida: {e.Message}"; }
     }
 
-    NpgsqlDataSource Fonte => _fonte ?? throw new InvalidOperationException(_erro ?? "banco não configurado");
+    NpgsqlDataSource Fonte
+    {
+        get
+        {
+            var (f, erro) = Resolver();
+            return f ?? throw new BancoNaoConfigurado(erro ?? "banco não configurado");
+        }
+    }
 
     public async Task<(bool Ok, string? Erro)> ConfereAsync()
     {
-        if (_fonte is null) return (false, _erro);
+        var (f, erro) = Resolver();
+        if (f is null) return (false, erro);
         try
         {
-            await using var cmd = _fonte.CreateCommand("select 1");
+            await using var cmd = f.CreateCommand("select 1");
             await cmd.ExecuteScalarAsync();
             return (true, null);
         }
@@ -90,6 +108,8 @@ public sealed class Db
         return await cmd.ExecuteNonQueryAsync();
     }
 }
+
+public sealed class BancoNaoConfigurado(string msg) : InvalidOperationException(msg);
 
 /// <summary>Leitura tolerante: coluna nula vira null, nunca exceção.</summary>
 public static class Leitor

@@ -34,6 +34,21 @@ builder.Services.AddCors(c => c.AddDefaultPolicy(p => p.AllowAnyHeader().AllowAn
 var app = builder.Build();
 app.UseCors();
 
+/* ---- erro vira JSON, nunca stack trace na tela do gestor ------------------------ */
+app.UseExceptionHandler(h => h.Run(async ctx =>
+{
+    var ex = ctx.Features.Get<Microsoft.AspNetCore.Diagnostics.IExceptionHandlerFeature>()?.Error;
+    ctx.Response.StatusCode = ex is BancoNaoConfigurado ? 503 : 500;
+    ctx.Response.ContentType = "application/json; charset=utf-8";
+    var msg = ex switch
+    {
+        BancoNaoConfigurado b => b.Message,
+        Npgsql.NpgsqlException n => $"banco: {n.Message}",
+        _ => ex?.Message ?? "erro",
+    };
+    await ctx.Response.WriteAsJsonAsync(new { error = msg });
+}));
+
 /* ---- saúde: a API sobe mesmo sem banco configurado; o /health diz o que falta ---- */
 app.MapGet("/api/health", async (Db db, IConfiguration cfg) =>
 {
