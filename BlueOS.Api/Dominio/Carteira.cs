@@ -24,8 +24,8 @@ public sealed class Carteira(Db db)
             : Sql.Fmt($" and cs.squad_id = any({ids ?? []})");
         var extras = !detalhe ? "" : """
             ,
-               (select json_agg(json_build_object('id', p.id, 'lote', p.lote, 'numero', p.numero, 'funil', p.funil, 'formato', p.formato, 'url', p.storage_url, 'criado_em', p.created_at, 'copy_peca_id', p.copy_peca_id) order by p.created_at desc)
-                  from (select x.id, y.numero as lote, x.numero, x.funil, x.formato, x.storage_url, x.created_at, x.copy_peca_id::text as copy_peca_id
+               (select json_agg(json_build_object('id', p.id, 'lote', p.lote, 'numero', p.numero, 'funil', p.funil, 'formato', p.formato, 'url', p.storage_url, 'criado_em', p.created_at, 'copy_peca_id', p.copy_peca_id, 'template_id', p.template_id) order by p.created_at desc)
+                  from (select x.id, y.numero as lote, x.numero, x.funil, x.formato, x.storage_url, x.created_at, x.copy_peca_id::text as copy_peca_id, x.template_id
                         from public.designer_pecas x join public.designer_lotes y on y.id = x.lote_id
                         where y.cliente_id = c.cliente_id and x.storage_url is not null order by x.created_at desc limit 60) p)::text as artes,
                (select json_agg(json_build_object('lote_id', l.lote_id, 'nome', l.nome, 'briefing', l.briefing, 'modelo', l.modelo, 'criado_em', l.criado_em,
@@ -207,6 +207,7 @@ public sealed class Carteira(Db db)
                     Id = Str(a, "id") ?? "", PecaId = Str(a, "copy_peca_id") ?? "", Etapa = Enum.TryParse<Etapa>(funil, out var et) ? et : Etapa.MOFU, Formato = Str(a, "formato") ?? "feed",
                     Titulo = $"{funil} · peça {Num(a, "numero")} · {Str(a, "formato")} · lote {Num(a, "lote")}", Url = Str(a, "url") ?? "", Lote = (int)Num(a, "lote"),
                     CriadoEm = DateTime.TryParse(Str(a, "criado_em"), out var dt2) ? dt2 : DateTime.MinValue, Aprovada = true,
+                    Template = Str(a, "template_id"),
                 });
             }
         var recs = TryJson(r, "recomendacoes");

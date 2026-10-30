@@ -16,6 +16,17 @@
             <label class="opcao"><input type="checkbox" @bind="feed" /> feed 1080x1080</label>
             <label class="opcao"><input type="checkbox" @bind="story" /> story 1080x1920</label>
         </div>
+        <label class="template">Como o criativo sai
+            <select @bind="template">
+                @foreach (var grupo in TemplatesDoDesigner.Lista.GroupBy(t => t.Grupo))
+                {
+                    <optgroup label="@grupo.Key">
+                        @foreach (var t in grupo) { <option value="@t.Id">@t.Nome</option> }
+                    </optgroup>
+                }
+            </select>
+        </label>
+        <p class="text-3 mini">@TemplatesDoDesigner.PorId(template).Descricao</p>
         <div class="acoes">
             <button type="button" class="btn btn-destaque" @onclick="Gerar" disabled="@(ocupado || escolhidas.Count == 0 || (!feed && !story))">@(ocupado ? (Api.EhDemo ? "Gerando…" : "Gerando… de 1 a 3 min por arte") : $"Gerar {escolhidas.Count * ((feed ? 1 : 0) + (story ? 1 : 0))} arte(s)")</button>
         </div>
@@ -52,7 +63,7 @@
         <figure class="arte @(a.Aprovada ? "aprovada" : "") @(Cliente.Pilotos.ContainsValue(a.Id) ? "piloto" : "")">
             <img src="@a.Url" alt="@a.Titulo" loading="lazy" />
             <figcaption>
-                <div class="mini"><span class="pilula pilula-etapa">@a.Etapa</span> @a.Titulo</div>
+                <div class="mini"><span class="pilula pilula-etapa">@a.Etapa</span> @a.Titulo@(a.Template is null ? "" : $" · {TemplatesDoDesigner.Nome(a.Template).ToLowerInvariant()}")</div>
                 <div class="acoes">
                     <button type="button" class="btn btn-mini @(a.Aprovada ? "btn-ghost" : "btn-destaque")" @onclick="() => Aprovar(a)">@(a.Aprovada ? "Desaprovar" : "Aprovar")</button>
                     @foreach (var et in Exigidas)
@@ -81,6 +92,8 @@
 
     HashSet<string> escolhidas = new();
     bool feed = true, story = true;
+    /// <summary>Como o criativo sai (de-para do seletor do V1): auto, uma cena, centralizado ou livre.</summary>
+    string template = TemplatesDoDesigner.Auto;
     string? erro; bool ocupado;
     Cliente? visto;
 
@@ -99,7 +112,7 @@
         try
         {
             var formatos = new List<string>(); if (feed) formatos.Add("feed"); if (story) formatos.Add("story");
-            await Api.GerarArtesAsync(Cliente, escolhidas.ToList(), formatos);
+            await Api.GerarArtesAsync(Cliente, escolhidas.ToList(), formatos, template);
         }
         catch (Exception ex) { erro = ex.Message; }
         finally { ocupado = false; }

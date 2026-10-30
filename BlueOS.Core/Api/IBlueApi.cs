@@ -55,7 +55,9 @@ public interface IBlueApi
     Task AprovarPecaAsync(Cliente c, string pecaId, bool aprovada);
 
     /* ---- design ------------------------------------------------------------ */
-    Task<IReadOnlyList<Arte>> GerarArtesAsync(Cliente c, IReadOnlyList<string> pecaIds, IReadOnlyList<string> formatos);
+    /// <summary>Gera as artes das peças escolhidas. `template` é como o criativo sai (Design.TemplatesDoDesigner):
+    /// null ou "auto" = rodízio de cena; uma cena; "centralizado"; ou "livre".</summary>
+    Task<IReadOnlyList<Arte>> GerarArtesAsync(Cliente c, IReadOnlyList<string> pecaIds, IReadOnlyList<string> formatos, string? template = null);
     Task AprovarArteAsync(Cliente c, string arteId, bool aprovada);
     /// <summary>Escolhe (ou tira, com null) o criativo piloto de uma etapa do funil.</summary>
     Task EscolherPilotoAsync(Cliente c, Etapa etapa, string? arteId);

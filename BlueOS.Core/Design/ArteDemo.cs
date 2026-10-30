@@ -21,7 +21,7 @@ public static class ArteDemo
         ("#0b1f3a", "#0e5fd8"), ("#101828", "#1d7a5f"), ("#1a1033", "#7c3aed"), ("#1f1302", "#c2410c"), ("#0f172a", "#0891b2"),
     ];
 
-    public static Arte Gerar(Cliente c, PecaDeCopy peca, string formato, int lote, int indice)
+    public static Arte Gerar(Cliente c, PecaDeCopy peca, string formato, int lote, int indice, string? template = null)
     {
         var (largura, altura) = formato == "story" ? (1080, 1920) : (1080, 1080);
         var (corA, corB) = Paletas[(BlueOS.Core.Setup.Semente.De(c.Slug) + indice) % Paletas.Length];
@@ -66,6 +66,7 @@ public static class ArteDemo
             Etapa = peca.Etapa,
             Formato = formato,
             Titulo = $"{peca.Etapa} · peça {peca.Numero} · {formato} · lote {lote}",
+            Template = string.IsNullOrWhiteSpace(template) ? TemplatesDoDesigner.Auto : template,
             Url = dataUrl,
             Lote = lote,
         };

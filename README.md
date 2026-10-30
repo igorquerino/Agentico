@@ -56,6 +56,10 @@ topo e cada etapa rende abaixo.
    em cada vaga nasceu da copy daquela etapa (MOFU na vaga de MOFU, BOFU na de BOFU): vaga errada é
    pendência do Design e recusa do Publicar (`assento_errado`). O Publicar do V1 ainda sobe um criativo só
    (o de MOFU) para todos os conjuntos; os outros pilotos entram pela troca de criativo. Nas
+   O seletor **"Como o criativo sai"** é o de-para do seletor do V1 (`Core/Design/TemplatesDoDesigner.cs`,
+   cópia de `lib/designer/estilos-lista.ts`): Auto (rodízio de cena), uma cena fixa (notebook, celular,
+   pessoa do ICP, conceito 3D, objeto símbolo, mockup premium, comparativo), Centralizado (padrão da
+   casa) ou Gerar livre (sem layout). Só o id viaja em `peca.template`; o prompt mora no V1. Nas
    fontes reais o botão Gerar chama o **Agente Designer do V1** (`POST /api/designer/gerar`):
    uma chamada abre o lote da geração e devolve o plano, depois uma chamada por peça e
    formato gera a imagem com o modelo de imagem (OpenAI gpt-image, `OPENAI_API_KEY` no

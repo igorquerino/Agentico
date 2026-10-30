@@ -200,7 +200,7 @@ public sealed class DemoApi : IBlueApi
 
     /* ---- design -------------------------------------------------------------- */
 
-    public Task<IReadOnlyList<Arte>> GerarArtesAsync(Cliente c, IReadOnlyList<string> pecaIds, IReadOnlyList<string> formatos)
+    public Task<IReadOnlyList<Arte>> GerarArtesAsync(Cliente c, IReadOnlyList<string> pecaIds, IReadOnlyList<string> formatos, string? template = null)
     {
         var lote = (c.Artes.Count == 0 ? 0 : c.Artes.Max(a => a.Lote)) + 1;
         var novas = new List<Arte>();
@@ -209,7 +209,7 @@ public sealed class DemoApi : IBlueApi
         {
             var peca = c.Pecas.FirstOrDefault(p => p.Id == id);
             if (peca is null) continue;
-            foreach (var f in formatos) novas.Add(ArteDemo.Gerar(c, peca, f, lote, i++));
+            foreach (var f in formatos) novas.Add(ArteDemo.Gerar(c, peca, f, lote, i++, template));
         }
         c.Artes.InsertRange(0, novas);
         Avisar();

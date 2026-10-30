@@ -505,8 +505,10 @@ public sealed class V1Api : IBlueApi, IDisposable
        A arte entra na galeria assim que a chamada volta (Avisar), uma por uma.
        A copy identifica-se por (funil, número=ordem); o `head` do plano cobre o
        caso de número divergente. */
-    public async Task<IReadOnlyList<Arte>> GerarArtesAsync(Cliente c, IReadOnlyList<string> pecaIds, IReadOnlyList<string> formatos)
+    public async Task<IReadOnlyList<Arte>> GerarArtesAsync(Cliente c, IReadOnlyList<string> pecaIds, IReadOnlyList<string> formatos, string? template = null)
     {
+        /* "auto" é o padrão do V1 (rodízio de cena): não viaja; os outros ids vão em peca.template */
+        var templateId = string.IsNullOrWhiteSpace(template) || template == Design.TemplatesDoDesigner.Auto ? null : template.Trim();
         var fmts = formatos.Select(f => f == "story" ? "story" : "feed").Distinct().ToList();
         if (fmts.Count == 0) fmts.Add("feed");
         var lotes = c.Lotes.Where(l => l.Pecas.Any(p => pecaIds.Contains(p.Id))).ToList();
@@ -527,7 +529,7 @@ public sealed class V1Api : IBlueApi, IDisposable
                     try
                     {
                         var r = await Envie(HttpMethod.Post, "api/designer/gerar",
-                            new { cliente = c.Slug, lote_id = lote.Id, designer_lote_id = designerLoteId, formato = f, peca = new { funil = alvo.Funil, numero = alvo.Numero, formato = f } });
+                            new { cliente = c.Slug, lote_id = lote.Id, designer_lote_id = designerLoteId, formato = f, peca = new { funil = alvo.Funil, numero = alvo.Numero, formato = f, template = templateId } });
                         foreach (var s in Lista(r, "pecas"))
                         {
                             var formato = S(s, "formato") ?? f;
@@ -535,6 +537,7 @@ public sealed class V1Api : IBlueApi, IDisposable
                             {
                                 Id = S(s, "id") ?? Guid.NewGuid().ToString("n"), PecaId = p.Id, Etapa = p.Etapa, Formato = formato,
                                 Titulo = $"{p.Etapa} {p.Numero} · {formato} · copy lote {lote.Numero}", Url = S(s, "url") ?? "", Lote = lote.Numero, Aprovada = false,
+                                Template = templateId ?? Design.TemplatesDoDesigner.Auto,
                             };
                             c.Artes.Insert(0, arte); novas.Add(arte); Avisar();
                         }

@@ -238,6 +238,8 @@ public sealed class Arte
     public DateTime CriadoEm { get; init; } = DateTime.Now;
     public bool Aprovada { get; set; }
     public string Origem { get; init; } = "designer";
+    /// <summary>Como a arte saiu: "auto", uma cena, "centralizado" ou "livre" (designer_pecas.template_id no V1).</summary>
+    public string? Template { get; init; }
 }
 
 /* ---- publicação ---------------------------------------------------------------- */

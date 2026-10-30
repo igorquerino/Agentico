@@ -204,7 +204,7 @@ public sealed class ApiNetApi : IBlueApi, IDisposable
         await Envie(HttpMethod.Patch, $"api/clientes/{Uri.EscapeDataString(c.Slug)}/pecas/{Uri.EscapeDataString(pecaId)}", new { aprovada });
         c.Pecas.First(x => x.Id == pecaId).Aprovada = aprovada; Avisar();
     }
-    public Task<IReadOnlyList<Arte>> GerarArtesAsync(Cliente c, IReadOnlyList<string> pecaIds, IReadOnlyList<string> formatos) => V1.GerarArtesAsync(c, pecaIds, formatos);
+    public Task<IReadOnlyList<Arte>> GerarArtesAsync(Cliente c, IReadOnlyList<string> pecaIds, IReadOnlyList<string> formatos, string? template = null) => V1.GerarArtesAsync(c, pecaIds, formatos, template);
     public Task AprovarArteAsync(Cliente c, string arteId, bool aprovada) { c.Artes.First(a => a.Id == arteId).Aprovada = aprovada; Avisar(); return Task.CompletedTask; }
     public Task EscolherPilotoAsync(Cliente c, Etapa etapa, string? arteId)
     {
