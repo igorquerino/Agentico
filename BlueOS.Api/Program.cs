@@ -191,7 +191,11 @@ api.MapPatch("/clientes/{slug}/modo", async (string slug, ModoPedido p, HttpCont
     return r.Ok ? Results.Ok(new { ok = true }) : Results.Json(new { error = r.Erro }, statusCode: r.Status);
 });
 
-api.MapGet("/motor/chave-geral", async (Escritas escritas) => Results.Ok(await escritas.ChaveGeralAsync()));
+api.MapGet("/motor/chave-geral", async (Escritas escritas) =>
+{
+    var (ligada, motivo, por, mudadoEm) = await escritas.ChaveGeralAsync();
+    return Results.Ok(new { ligada, motivo, por, mudadoEm });
+});
 api.MapPatch("/motor/chave-geral", async (ChaveGeralPedido p, HttpContext c, Escopo escopo, Escritas escritas) =>
 {
     var esc = await escopo.DoUsuarioAsync(UserId(c));

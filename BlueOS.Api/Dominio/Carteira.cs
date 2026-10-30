@@ -24,9 +24,10 @@ public sealed class Carteira(Db db)
             : Sql.Fmt($" and cs.squad_id = any({ids ?? []})");
         var extras = !detalhe ? "" : """
             ,
-               (select json_agg(json_build_object('id', p.id, 'lote', l.numero, 'numero', p.numero, 'funil', p.funil, 'formato', p.formato, 'url', p.storage_url, 'criado_em', p.created_at) order by p.created_at desc)
-                  from (select * from public.designer_pecas x join public.designer_lotes y on y.id = x.lote_id where y.cliente_id = c.cliente_id and x.storage_url is not null order by x.created_at desc limit 60) p
-                  join public.designer_lotes l on l.id = p.lote_id)::text as artes,
+               (select json_agg(json_build_object('id', p.id, 'lote', p.lote, 'numero', p.numero, 'funil', p.funil, 'formato', p.formato, 'url', p.storage_url, 'criado_em', p.created_at) order by p.created_at desc)
+                  from (select x.id, y.numero as lote, x.numero, x.funil, x.formato, x.storage_url, x.created_at
+                        from public.designer_pecas x join public.designer_lotes y on y.id = x.lote_id
+                        where y.cliente_id = c.cliente_id and x.storage_url is not null order by x.created_at desc limit 60) p)::text as artes,
                (select json_agg(r order by r.criado_em desc) from (
             """ + Automacao.RecsSql("c.cliente_slug") + """
                ) r)::text as recomendacoes
