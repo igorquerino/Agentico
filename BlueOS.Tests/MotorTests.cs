@@ -296,7 +296,12 @@ public class FluxoDemoTests
         Assert.Equal(Estagio.Design, Estagios.DoCliente(c, api.Parametros));
         var artes = await api.GerarArtesAsync(c, [lote.Pecas[0].Id], ["feed", "story"]);
         Assert.Equal(2, artes.Count);
-        await api.EscolherPilotoAsync(c, artes[0].Id);
+        /* faixa 2 (R$ 4.000) pede um piloto de MOFU e outro de BOFU: só com o de MOFU o Design não fecha */
+        await api.EscolherPilotoAsync(c, Etapa.MOFU, artes[0].Id);
+        Assert.Equal(Estagio.Design, Estagios.DoCliente(c, api.Parametros));
+        Assert.Contains("criativo piloto de BOFU", Estagios.DesignPronto(c, api.Parametros).Pendencias);
+        var artesBofu = await api.GerarArtesAsync(c, [lote.Pecas.First(p => p.Etapa == Etapa.BOFU).Id], ["feed"]);
+        await api.EscolherPilotoAsync(c, Etapa.BOFU, artesBofu[0].Id);
         Assert.Equal(Estagio.Campanha, Estagios.DoCliente(c, api.Parametros));
         var est = await api.MontarEstruturaAsync(c);
         Assert.True(est.Ok);

@@ -200,7 +200,7 @@ public sealed class V1Api : IBlueApi, IDisposable
             Seguro(async () =>
             {
                 var p = await Get($"api/trafego/pecas-designer?cliente={Uri.EscapeDataString(slug)}");
-                var lidas = Lista(p, "pecas").Select(x => new Arte { Id = S(x, "id") ?? "", PecaId = "", Etapa = Etapa.MOFU, Formato = "feed", Titulo = S(x, "titulo") ?? "", Url = S(x, "url") ?? "", Lote = (int)(D(x, "lote") ?? 0), Aprovada = true }).ToList();
+                var lidas = Lista(p, "pecas").Select(x => new Arte { Id = S(x, "id") ?? "", PecaId = "", Etapa = EtapaDoTitulo(S(x, "titulo")), Formato = S(x, "titulo") is { } tf && tf.EndsWith("story", StringComparison.OrdinalIgnoreCase) ? "story" : "feed", Titulo = S(x, "titulo") ?? "", Url = S(x, "url") ?? "", Lote = (int)(D(x, "lote") ?? 0), Aprovada = true }).ToList();
                 c.Artes.Clear();
                 c.Artes.AddRange(lidas);
             }),
@@ -347,6 +347,13 @@ public sealed class V1Api : IBlueApi, IDisposable
         var nomeSquad = Lista(d, "squads").FirstOrDefault(s => S(s, "squad_id") == squadAtual);
         if (nomeSquad.ValueKind == JsonValueKind.Object) c.Squad = S(nomeSquad, "squad_nome") ?? c.Squad;
     }
+
+    /* O titulo da biblioteca do Designer (tituloDaPeca) comeca pelo funil: "MOFU 1 - feed". */
+    static Etapa EtapaDoTitulo(string? t) =>
+        t is null ? Etapa.MOFU
+        : t.StartsWith("TOFU", StringComparison.OrdinalIgnoreCase) || t.StartsWith("topo", StringComparison.OrdinalIgnoreCase) ? Etapa.TOFU
+        : t.StartsWith("BOFU", StringComparison.OrdinalIgnoreCase) || t.StartsWith("fundo", StringComparison.OrdinalIgnoreCase) ? Etapa.BOFU
+        : Etapa.MOFU;
 
     static string? SN(JsonElement j, string nome)
     {
@@ -546,7 +553,12 @@ public sealed class V1Api : IBlueApi, IDisposable
     }
 
     public Task AprovarArteAsync(Cliente c, string arteId, bool aprovada) { c.Artes.First(a => a.Id == arteId).Aprovada = aprovada; Avisar(); return Task.CompletedTask; }
-    public Task EscolherPilotoAsync(Cliente c, string? arteId) { c.ArtePilotoId = arteId; Avisar(); return Task.CompletedTask; }
+    public Task EscolherPilotoAsync(Cliente c, Etapa etapa, string? arteId)
+    {
+        if (arteId is null) c.Pilotos.Remove(etapa); else c.Pilotos[etapa] = arteId;
+        Avisar();
+        return Task.CompletedTask;
+    }
 
     /* ---- campanha ------------------------------------------------------------ */
 
@@ -562,10 +574,13 @@ public sealed class V1Api : IBlueApi, IDisposable
 
     public async Task<ResultadoDaPublicacao> PublicarAsync(Cliente c, PedidoDePublicacao pedido)
     {
-        if (c.ArtePiloto is null) return new(false, "sem_estrutura", "escolha o criativo piloto (uma peça do Designer) antes de publicar.", false, null, null);
+        /* O Publicar do V1 (publicar/start.ts) sobe UM designer_peca_id para todos os conjuntos. Vai o piloto
+           de MOFU (toda faixa tem MOFU); os outros pilotos ficam registrados e entram pela troca de criativo. */
+        var piloto = c.ArtePiloto;
+        if (piloto is null) return new(false, "sem_estrutura", "escolha o criativo piloto de MOFU (uma peça do Designer) antes de publicar.", false, null, null);
         var corpo = new
         {
-            cliente_slug = c.Slug, designer_peca_id = c.ArtePiloto.Id,
+            cliente_slug = c.Slug, designer_peca_id = piloto.Id,
             texto = pedido.Texto is null ? null : new { headline = pedido.Texto.Headline, corpo = pedido.Texto.Corpo, cta = pedido.Texto.Cta },
             politica_url = pedido.PoliticaUrl, link = pedido.Link, formulario_id = pedido.FormularioId,
         };
@@ -575,8 +590,11 @@ public sealed class V1Api : IBlueApi, IDisposable
         {
             var pub = new Publicacao { EstruturaHash = S(j, "estrutura_hash") ?? "", CampanhaId = S(j, "campanha_id"), FormularioId = S(j, "formulario_id"), Link = S(j, "link"), Estado = "ok" };
             foreach (var cj in Lista(j, "conjuntos")) pub.Conjuntos.Add(new ConjuntoCriado(S(cj, "nome") ?? "", Enum.TryParse<Etapa>(S(cj, "etapa"), out var et) ? et : Etapa.MOFU, S(cj, "publico") ?? "", S(cj, "adset_id") ?? "", 0));
-            foreach (var an in Lista(j, "anuncios")) pub.Anuncios.Add(new AnuncioCriado(S(an, "nome") ?? "", S(an, "adset_id") ?? "", S(an, "ad_id") ?? "", c.ArtePiloto.Id));
+            foreach (var an in Lista(j, "anuncios")) pub.Anuncios.Add(new AnuncioCriado(S(an, "nome") ?? "", S(an, "adset_id") ?? "", S(an, "ad_id") ?? "", piloto.Id));
             foreach (var av in Lista(j, "avisos")) pub.Avisos.Add(av.GetString() ?? "");
+            var outras = c.Pilotos.Where(kv => kv.Value != piloto.Id).Select(kv => kv.Key.ToString()).ToList();
+            if (outras.Count > 0)
+                pub.Avisos.Add($"o Publicar do V1 sobe um criativo só: os conjuntos de {string.Join(" e ", outras)} nasceram com o piloto de MOFU. Troque o anúncio deles no Gerenciador ou deixe a árvore trocar (TROCAR_CRIATIVO).");
             c.Publicacao = pub; Avisar();
             return new(true, null, null, false, pub, S(j, "recado"));
         }

@@ -22,14 +22,23 @@
         <p class="text-3 mini">@(Api.EhDemo ? "Demonstração: a arte é diagramada em SVG (HEAD, SUB, CTA e marca). Nas fontes reais a imagem sai do Agente Designer." : "O Agente Designer do V1 desenha cada arte com o modelo de imagem (gpt-image) a partir da copy escolhida, uma chamada por arte e formato. Cada arte entra na galeria assim que fica pronta; as já existentes vêm da biblioteca do Designer.")</p>
     </div>
     <div class="caixa">
-        <h3>Criativo piloto</h3>
-        <p class="text-3 mini">A arte que vai para todos os conjuntos do Start (1 anúncio por conjunto, AD-MT-17). Trocar o criativo depois é decisão do motor, pela árvore.</p>
-        @if (Cliente.ArtePiloto is { } piloto)
-        {
-            <img class="piloto" src="@piloto.Url" alt="@piloto.Titulo" />
-            <p class="mini">@piloto.Titulo</p>
-        }
-        else { <p class="warn mini">nenhum piloto escolhido</p> }
+        <h3>Criativos piloto</h3>
+        <p class="text-3 mini">Um criativo por etapa do funil, como a faixa do budget pede (@string.Join(", ", Exigidas)). Cada conjunto do Start leva o piloto da etapa dele (1 anúncio por conjunto, AD-MT-17). Trocar o criativo depois é decisão do motor, pela árvore.</p>
+        <div class="pilotos">
+            @foreach (var et in Exigidas)
+            {
+                <div class="piloto-slot @(Cliente.PilotoDa(et) is null ? "vazio" : "")">
+                    <span class="pilula pilula-etapa">@et</span>
+                    @if (Cliente.PilotoDa(et) is { } pl)
+                    {
+                        <img class="piloto" src="@pl.Url" alt="@pl.Titulo" />
+                        <p class="mini">@pl.Titulo</p>
+                        <button type="button" class="btn btn-ghost btn-mini" @onclick="() => Piloto(et, null)">tirar</button>
+                    }
+                    else { <p class="warn mini">sem piloto de @et: escolha uma arte na galeria</p> }
+                </div>
+            }
+        </div>
     </div>
 </div>
 
@@ -38,13 +47,17 @@
 <div class="galeria">
     @foreach (var a in Cliente.Artes)
     {
-        <figure class="arte @(a.Aprovada ? "aprovada" : "") @(a.Id == Cliente.ArtePilotoId ? "piloto" : "")">
+        <figure class="arte @(a.Aprovada ? "aprovada" : "") @(Cliente.Pilotos.ContainsValue(a.Id) ? "piloto" : "")">
             <img src="@a.Url" alt="@a.Titulo" loading="lazy" />
             <figcaption>
-                <div class="mini">@a.Titulo</div>
+                <div class="mini"><span class="pilula pilula-etapa">@a.Etapa</span> @a.Titulo</div>
                 <div class="acoes">
                     <button type="button" class="btn btn-mini @(a.Aprovada ? "btn-ghost" : "btn-destaque")" @onclick="() => Aprovar(a)">@(a.Aprovada ? "Desaprovar" : "Aprovar")</button>
-                    <button type="button" class="btn btn-mini @(a.Id == Cliente.ArtePilotoId ? "btn-ok" : "btn-ghost")" @onclick="() => Piloto(a)">@(a.Id == Cliente.ArtePilotoId ? "piloto" : "Usar como piloto")</button>
+                    @foreach (var et in Exigidas)
+                    {
+                        var ehPiloto = Cliente.Pilotos.TryGetValue(et, out var pid) && pid == a.Id;
+                        <button type="button" class="btn btn-mini @(ehPiloto ? "btn-ok" : "btn-ghost")" title="@(a.Etapa == et ? $"usar como piloto de {et}" : $"a copy desta arte é de {a.Etapa}; usar mesmo assim como piloto de {et}")" @onclick="() => Piloto(et, ehPiloto ? null : a.Id)">@(ehPiloto ? $"piloto {et}" : $"piloto de {et}")</button>
+                    }
                 </div>
             </figcaption>
         </figure>
@@ -52,7 +65,7 @@
 </div>
 
 <footer class="etapa-rodape">
-    @{ var (ok, pend) = Estagios.DesignPronto(Cliente); }
+    @{ var (ok, pend) = Estagios.DesignPronto(Cliente, Api.Parametros); }
     @if (ok) { <span class="ok">Criativo piloto escolhido.</span> } else { <span class="warn">Falta: @string.Join(", ", pend).</span> }
     <button type="button" class="btn btn-destaque" @onclick="() => Avancar.InvokeAsync()">Ir para a campanha &rarr;</button>
 </footer>
@@ -89,5 +102,7 @@
     }
 
     async Task Aprovar(Arte a) { erro = null; try { await Api.AprovarArteAsync(Cliente, a.Id, !a.Aprovada); } catch (Exception ex) { erro = ex.Message; } }
-    async Task Piloto(Arte a) { erro = null; try { await Api.EscolherPilotoAsync(Cliente, a.Id == Cliente.ArtePilotoId ? null : a.Id); } catch (Exception ex) { erro = ex.Message; } }
+    /// <summary>As etapas que a faixa do budget pede: uma vaga de piloto para cada.</summary>
+    IReadOnlyList<Etapa> Exigidas => Estagios.EtapasExigidas(Cliente, Api.Parametros);
+    async Task Piloto(Etapa etapa, string? arteId) { erro = null; try { await Api.EscolherPilotoAsync(Cliente, etapa, arteId); } catch (Exception ex) { erro = ex.Message; } }
 }

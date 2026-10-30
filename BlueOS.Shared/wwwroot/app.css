@@ -139,6 +139,10 @@ input.curto { display: inline-block; width: 240px; margin: 0; padding: 5px 10px;
 .arte figcaption { padding: 8px 10px; }
 .piloto { max-width: 260px; border-radius: 10px; border: 1px solid var(--border-2); }
 .piloto-caixa { display: flex; gap: 16px; align-items: flex-start; }
+.pilotos { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; }
+.piloto-slot { border: 1px solid var(--border); border-radius: var(--raio); padding: 10px; display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
+.piloto-slot.vazio { border-style: dashed; }
+.piloto-slot .piloto { max-width: 100%; }
 .kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 14px; }
 .kpi { background: var(--raise); border: 1px solid var(--border); border-radius: 12px; padding: 12px 14px; display: flex; flex-direction: column; gap: 2px; }
 .kpi .rot { font-size: 11.5px; letter-spacing: .06em; text-transform: uppercase; color: var(--text-3); }

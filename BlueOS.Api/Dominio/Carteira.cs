@@ -199,7 +199,8 @@ public sealed class Carteira(Db db)
         if (!string.IsNullOrWhiteSpace(artes))
             foreach (var a in JsonDocument.Parse(artes).RootElement.EnumerateArray())
             {
-                var funil = (Str(a, "funil") ?? "").ToUpperInvariant();
+                /* o Designer grava o funil em maiúsculas (MOFU/BOFU/TOFU/MISTO); umas poucas peças antigas vieram como "meio" (V0) */
+                var funil = (Str(a, "funil") ?? "").ToUpperInvariant() switch { "MEIO" => "MOFU", "TOPO" => "TOFU", "FUNDO" => "BOFU", var f => f };
                 c.Artes.Add(new Arte
                 {
                     Id = Str(a, "id") ?? "", PecaId = "", Etapa = Enum.TryParse<Etapa>(funil, out var et) ? et : Etapa.MOFU, Formato = Str(a, "formato") ?? "feed",

@@ -66,12 +66,14 @@ public static class Estagios
         return (pend.Count == 0, pend);
     }
 
-    public static (bool Ok, List<string> Pendencias) DesignPronto(Cliente c)
+    /// <summary>Design pronto = um criativo piloto para CADA etapa que a faixa do budget pede.</summary>
+    public static (bool Ok, List<string> Pendencias) DesignPronto(Cliente c, ParametrosMotor p)
     {
         var pend = new List<string>();
         if (c.Artes.Count == 0) pend.Add("nenhuma arte gerada");
         else if (!c.Artes.Any(a => a.Aprovada)) pend.Add("nenhuma arte aprovada");
-        if (c.ArtePiloto is null) pend.Add("criativo piloto escolhido");
+        foreach (var et in EtapasExigidas(c, p))
+            if (c.PilotoDa(et) is null) pend.Add($"criativo piloto de {et}");
         return (pend.Count == 0, pend);
     }
 
@@ -83,7 +85,7 @@ public static class Estagios
         if (!AssetsCompletos(c).Ok) return Estagio.Assets;
         if (!FichaCompleta(c).Ok) return Estagio.Ficha;
         if (!CopyPronta(c, p).Ok) return Estagio.Copy;
-        if (!DesignPronto(c).Ok) return Estagio.Design;
+        if (!DesignPronto(c, p).Ok) return Estagio.Design;
         if (!CampanhaPublicada(c)) return Estagio.Campanha;
         return Estagio.Automacao;
     }
@@ -95,7 +97,7 @@ public static class Estagios
         Estagio.Assets => AssetsCompletos(c).Pendencias,
         Estagio.Ficha => FichaCompleta(c).Pendencias,
         Estagio.Copy => CopyPronta(c, p).Pendencias,
-        Estagio.Design => DesignPronto(c).Pendencias,
+        Estagio.Design => DesignPronto(c, p).Pendencias,
         Estagio.Campanha => ["publicar a estrutura na Meta"],
         _ => [],
     };

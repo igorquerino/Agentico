@@ -50,7 +50,10 @@ topo e cada etapa rende abaixo.
 4. **Copy**: o agente escreve as peças das etapas que a **faixa do budget** pede (f1: só MOFU;
    f2: MOFU e BOFU; f3: TOFU, MOFU e BOFU), com a estrutura declarada (ângulo, papel da sub,
    tipo de CTA) e o crivo em código (régua V8 e regras fechadas do vault). O gestor aprova.
-5. **Design**: as artes das peças aprovadas (feed e story) e a escolha do criativo piloto. Nas
+5. **Design**: as artes das peças aprovadas (feed e story) e a escolha dos criativos piloto, **um por
+   etapa do funil** que a faixa do budget pede (f1 só MOFU; f2 MOFU e BOFU; f3 TOFU, MOFU e BOFU):
+   cada conjunto do Start leva o piloto da etapa dele. O Publicar do V1 ainda sobe um criativo só
+   (o de MOFU) para todos os conjuntos; os outros pilotos entram pela troca de criativo. Nas
    fontes reais o botão Gerar chama o **Agente Designer do V1** (`POST /api/designer/gerar`):
    uma chamada abre o lote da geração e devolve o plano, depois uma chamada por peça e
    formato gera a imagem com o modelo de imagem (OpenAI gpt-image, `OPENAI_API_KEY` no

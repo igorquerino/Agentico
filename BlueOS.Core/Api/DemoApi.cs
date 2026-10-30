@@ -220,15 +220,15 @@ public sealed class DemoApi : IBlueApi
     {
         var a = c.Artes.First(x => x.Id == arteId);
         a.Aprovada = aprovada;
-        if (!aprovada && c.ArtePilotoId == arteId) c.ArtePilotoId = null;
+        if (!aprovada) foreach (var et in c.Pilotos.Where(kv => kv.Value == arteId).Select(kv => kv.Key).ToList()) c.Pilotos.Remove(et);
         Avisar();
         return Task.CompletedTask;
     }
 
-    public Task EscolherPilotoAsync(Cliente c, string? arteId)
+    public Task EscolherPilotoAsync(Cliente c, Etapa etapa, string? arteId)
     {
-        c.ArtePilotoId = arteId;
-        if (arteId is not null) c.Artes.First(a => a.Id == arteId).Aprovada = true;
+        if (arteId is null) c.Pilotos.Remove(etapa);
+        else { c.Pilotos[etapa] = arteId; c.Artes.First(a => a.Id == arteId).Aprovada = true; }
         Avisar();
         return Task.CompletedTask;
     }
@@ -254,15 +254,21 @@ public sealed class DemoApi : IBlueApi
             return new(false, "sem_politica", "a Meta exige a URL da política de privacidade do anunciante para criar o formulário (ou informe um formulário que já existe na página).", false, null, null);
         if (string.IsNullOrWhiteSpace(pedido.Link) && string.IsNullOrWhiteSpace(pedido.PoliticaUrl))
             return new(false, "sem_link", "o anúncio precisa de um link (o site do cliente).", false, null, null);
-        var arte = c.ArtePiloto;
-        if (arte is null) return new(false, "sem_estrutura", "escolha o criativo piloto no passo Design antes de publicar.", false, null, null);
         var r = await MontarEstruturaAsync(c);
         if (!r.Ok || r.Estrutura is null || r.Estrutura.Conjuntos.Count == 0)
             return new(false, "sem_estrutura", r.Motivo ?? "a estrutura não tem conjuntos para publicar.", false, null, null);
         var e = r.Estrutura;
-        var peca = c.Pecas.FirstOrDefault(p => p.Id == arte.PecaId);
-        if (peca is not null && !peca.CrivoOk)
-            return new(false, "publicacao_recusada", $"a peça da arte não passou no crivo ({peca.MotivoDoCrivo}). A publicação não sobe peça reprovada.", false, null, null);
+        /* Um criativo por etapa: cada conjunto leva o piloto da etapa dele. Faltando algum, o publicar recusa. */
+        var pilotos = new Dictionary<Etapa, Arte>();
+        foreach (var et in e.Conjuntos.Select(x => x.Etapa).Distinct())
+        {
+            var arte = c.PilotoDa(et);
+            if (arte is null) return new(false, "sem_estrutura", $"escolha o criativo piloto de {et} no passo Design antes de publicar.", false, null, null);
+            var peca = c.Pecas.FirstOrDefault(p => p.Id == arte.PecaId);
+            if (peca is not null && !peca.CrivoOk)
+                return new(false, "publicacao_recusada", $"a peça da arte de {et} não passou no crivo ({peca.MotivoDoCrivo}). A publicação não sobe peça reprovada.", false, null, null);
+            pilotos[et] = arte;
+        }
 
         /* Idempotente: a mesma estrutura publicada volta como a mesma campanha. */
         if (c.Publicacao is { Estado: "ok" } pub && pub.EstruturaHash == e.Hash)
@@ -278,6 +284,7 @@ public sealed class DemoApi : IBlueApi
         foreach (var cj in e.Conjuntos)
         {
             var adsetId = IdDaMeta();
+            var arte = pilotos[cj.Etapa];
             nova.Conjuntos.Add(new ConjuntoCriado(cj.Nome, cj.Etapa, cj.Publico, adsetId, cj.DiarioCentavos));
             nova.Anuncios.Add(new AnuncioCriado(cj.Anuncio, adsetId, IdDaMeta(), arte.PecaId));
             c.Conjuntos.Add(new ConjuntoEmVeiculacao
@@ -638,7 +645,13 @@ public sealed class DemoApi : IBlueApi
         arteN.Aprovada = true;
         nautilus.Artes.Add(arteN);
         nautilus.Artes.Add(ArteDemo.Gerar(nautilus, pecaPiloto, "story", 1, 1));
-        nautilus.ArtePilotoId = arteN.Id;
+        /* faixa 2 (R$ 6.000): um piloto para MOFU e outro para BOFU */
+        var pecaBofu = loteN.Pecas.FirstOrDefault(p => p.Etapa == Etapa.BOFU && p.CrivoOk) ?? loteN.Pecas.First(p => p.Etapa == Etapa.BOFU);
+        var arteB = ArteDemo.Gerar(nautilus, pecaBofu, "feed", 1, 2);
+        arteB.Aprovada = true;
+        nautilus.Artes.Add(arteB);
+        nautilus.Pilotos[Etapa.MOFU] = arteN.Id;
+        nautilus.Pilotos[Etapa.BOFU] = arteB.Id;
         var estN = Estrutura.Montar(6000, true, true, 60, nautilus.NichoSlug, Parametros, Hoje.AddDays(-14));
         var pubN = new Publicacao { EstruturaHash = estN.Hash, NomeDaCampanha = estN.NomeDaCampanha ?? "", Simulado = true, Estado = "ok", VaultSha = estN.VaultSha, CampanhaId = IdDaMeta(), FormularioId = IdDaMeta(), Em = DateTime.Now.AddDays(-14) };
         var perfis = new[] { "vence", "queima", "caro", "aprendendo", "normal", "alerta" };
@@ -682,7 +695,7 @@ public sealed class DemoApi : IBlueApi
         var a2 = ArteDemo.Gerar(logtech, pl, "story", 1, 1);
         var a3 = ArteDemo.Gerar(logtech, loteL.Pecas.Where(p => p.CrivoOk).Skip(1).First(), "feed", 1, 2);
         logtech.Artes.AddRange([a1, a2, a3]);
-        logtech.ArtePilotoId = a1.Id;
+        logtech.Pilotos[Etapa.MOFU] = a1.Id;   /* faixa 1 (R$ 3.000): só MOFU */
 
         /* 3. Cliente em COPY: ficha completa, nenhum lote ainda. */
         var horizonte = new Cliente

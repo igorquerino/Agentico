@@ -57,7 +57,8 @@ public interface IBlueApi
     /* ---- design ------------------------------------------------------------ */
     Task<IReadOnlyList<Arte>> GerarArtesAsync(Cliente c, IReadOnlyList<string> pecaIds, IReadOnlyList<string> formatos);
     Task AprovarArteAsync(Cliente c, string arteId, bool aprovada);
-    Task EscolherPilotoAsync(Cliente c, string? arteId);
+    /// <summary>Escolhe (ou tira, com null) o criativo piloto de uma etapa do funil.</summary>
+    Task EscolherPilotoAsync(Cliente c, Etapa etapa, string? arteId);
 
     /* ---- campanha (Start) ---------------------------------------------------- */
     Task<ResultadoDaEstrutura> MontarEstruturaAsync(Cliente c);

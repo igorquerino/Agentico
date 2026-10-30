@@ -41,7 +41,10 @@ public sealed class Cliente
     public List<LoteDeCopy> Lotes { get; set; } = new();
     public List<Arte> Artes { get; set; } = new();
     /// <summary>A arte do passo 3 do Start: o criativo piloto (designer_peca_id).</summary>
-    public string? ArtePilotoId { get; set; }
+    /// <summary>O criativo piloto de CADA etapa do funil (arte do Designer). A faixa do budget diz quais etapas
+    /// precisam de um: f1 só MOFU; f2 MOFU e BOFU; f3 TOFU, MOFU e BOFU. Cada conjunto do Start leva o piloto
+    /// da etapa dele (1 anúncio por conjunto, AD-MT-17).</summary>
+    public Dictionary<Etapa, string> Pilotos { get; set; } = new();
 
     public Publicacao? Publicacao { get; set; }
 
@@ -54,7 +57,9 @@ public sealed class Cliente
     [System.Text.Json.Serialization.JsonIgnore] public IEnumerable<PecaDeCopy> Pecas => Lotes.SelectMany(l => l.Pecas);
     [System.Text.Json.Serialization.JsonIgnore] public bool ContaConectada => !string.IsNullOrWhiteSpace(Conta.AdAccountId);
     [System.Text.Json.Serialization.JsonIgnore] public bool TemLogo => Assets.Any(a => a.Tipo == TipoDeAsset.LogoPrincipal);
-    [System.Text.Json.Serialization.JsonIgnore] public Arte? ArtePiloto => Artes.FirstOrDefault(a => a.Id == ArtePilotoId);
+    public Arte? PilotoDa(Etapa etapa) => Pilotos.TryGetValue(etapa, out var id) ? Artes.FirstOrDefault(a => a.Id == id) : null;
+    /// <summary>O piloto principal: o de MOFU (toda faixa tem MOFU) ou, na falta, o primeiro escolhido.</summary>
+    [System.Text.Json.Serialization.JsonIgnore] public Arte? ArtePiloto => PilotoDa(Etapa.MOFU) ?? Pilotos.Keys.Select(PilotoDa).FirstOrDefault(a => a is not null);
 }
 
 public sealed class FichaCadastral

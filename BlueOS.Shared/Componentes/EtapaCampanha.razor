@@ -55,20 +55,30 @@ else
             <p class="text-3 mini">Chaves do vault lidas: @string.Join(", ", e.ChavesUsadas).</p>
         </div>
 
-        <div class="passo"><span class="num">3</span><div><h3>Anúncio: o criativo piloto</h3><p class="text-2">A arte escolhida no Design vai para @(e.Conjuntos.Count == 1 ? "o conjunto" : $"os {e.Conjuntos.Count} conjuntos").</p></div></div>
-        <div class="caixa piloto-caixa">
-            @if (Cliente.ArtePiloto is { } piloto)
+        <div class="passo"><span class="num">3</span><div><h3>Anúncio: os criativos piloto</h3><p class="text-2">Cada um dos @e.Conjuntos.Count conjuntos leva o piloto da etapa dele, escolhido no Design (1 anúncio por conjunto).</p></div></div>
+        <div class="caixa">
+            <div class="pilotos">
+                @foreach (var et in Estagios.EtapasExigidas(Cliente, Api.Parametros))
+                {
+                    <div class="piloto-slot @(Cliente.PilotoDa(et) is null ? "vazio" : "")">
+                        <span class="pilula pilula-etapa">@et · @e.Conjuntos.Count(x => x.Etapa == et) conjunto(s)</span>
+                        @if (Cliente.PilotoDa(et) is { } piloto)
+                        {
+                            <img class="piloto" src="@piloto.Url" alt="@piloto.Titulo" />
+                            <p class="mini">@piloto.Titulo</p>
+                            @if (Cliente.Pecas.FirstOrDefault(p => p.Id == piloto.PecaId) is { } pc)
+                            {
+                                <p class="mini"><strong>@pc.Headline</strong><br />@pc.Sub<br /><em>@pc.Cta</em> &rarr; @Estruturas.CtaParaMeta(pc.TipoCta)</p>
+                            }
+                        }
+                        else { <p class="warn mini">Sem piloto de @et: escolha um na etapa Design.</p> }
+                    </div>
+                }
+            </div>
+            @if (!Api.EhDemo && Estagios.EtapasExigidas(Cliente, Api.Parametros).Count > 1)
             {
-                <img class="piloto" src="@piloto.Url" alt="@piloto.Titulo" />
-                <div>
-                    <p class="mini">@piloto.Titulo</p>
-                    @if (Cliente.Pecas.FirstOrDefault(p => p.Id == piloto.PecaId) is { } pc)
-                    {
-                        <p class="mini"><strong>@pc.Headline</strong><br />@pc.Sub<br /><em>@pc.Cta</em> &rarr; @Estruturas.CtaParaMeta(pc.TipoCta)</p>
-                    }
-                </div>
+                <p class="warn mini">O Publicar do V1 sobe um criativo só (o de MOFU) para todos os conjuntos. Os outros pilotos ficam registrados aqui e entram pela troca de criativo, no Gerenciador ou pela árvore.</p>
             }
-            else { <p class="warn">Sem criativo piloto: escolha um na etapa Design.</p> }
         </div>
 
         <div class="passo"><span class="num">4</span><div><h3>Aplicar e publicar</h3><p class="text-2">Cria tudo na Meta, pausado: a campanha, o formulário da régua, os conjuntos e os anúncios. O sistema confere (validate_only) antes de cada escrita e mostra o link do Gerenciador.</p></div></div>
@@ -80,7 +90,7 @@ else
             </div>
             <p class="text-3 mini">Formulário da régua: nome, e-mail, telefone e cada pergunta da régua como múltipla escolha, com o nome de campo como chave. É isso que fecha o de-para da contagem de MQL. @(Cliente.Regua is null ? "Este cliente não tem régua: o Publicar vai recusar." : $"{Cliente.Regua.Perguntas.Count} pergunta(s) da régua.")</p>
             <div class="acoes">
-                <button type="button" class="btn btn-destaque btn-grande" @onclick="Publicar" disabled="@(ocupado || Cliente.ArtePiloto is null)">@(ocupado ? "Publicando…" : "Publicar na Meta (pausado)")</button>
+                <button type="button" class="btn btn-destaque btn-grande" @onclick="Publicar" disabled="@(ocupado || !Estagios.DesignPronto(Cliente, Api.Parametros).Ok)">@(ocupado ? "Publicando…" : "Publicar na Meta (pausado)")</button>
                 <span class="text-3 mini">publicar é de head pra cima; só em produção; idempotente pelo hash da estrutura (@e.Hash)</span>
             </div>
             @if (resultado is { } r && !r.Ok) { <p class="erro" role="alert">[@r.Codigo] @r.Motivo</p> }

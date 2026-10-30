@@ -107,7 +107,7 @@ public sealed class ApiNetApi : IBlueApi, IDisposable
         var c = await Get<Cliente>($"api/clientes/{Uri.EscapeDataString(slug)}");
         /* O que é local ao desktop (piloto, conjuntos lidos no ongoing) sobrevive à releitura; os lotes de copy
            agora vêm da API (copy_lote), então a releitura é a verdade. */
-        if (_cache.TryGetValue(slug, out var antigo)) { c.ArtePilotoId = antigo.ArtePilotoId; c.Conjuntos = antigo.Conjuntos; }
+        if (_cache.TryGetValue(slug, out var antigo)) { c.Pilotos = antigo.Pilotos; c.Conjuntos = antigo.Conjuntos; }
         _cache[slug] = c;
         return c;
     }
@@ -206,7 +206,12 @@ public sealed class ApiNetApi : IBlueApi, IDisposable
     }
     public Task<IReadOnlyList<Arte>> GerarArtesAsync(Cliente c, IReadOnlyList<string> pecaIds, IReadOnlyList<string> formatos) => V1.GerarArtesAsync(c, pecaIds, formatos);
     public Task AprovarArteAsync(Cliente c, string arteId, bool aprovada) { c.Artes.First(a => a.Id == arteId).Aprovada = aprovada; Avisar(); return Task.CompletedTask; }
-    public Task EscolherPilotoAsync(Cliente c, string? arteId) { c.ArtePilotoId = arteId; Avisar(); return Task.CompletedTask; }
+    public Task EscolherPilotoAsync(Cliente c, Etapa etapa, string? arteId)
+    {
+        if (arteId is null) c.Pilotos.Remove(etapa); else c.Pilotos[etapa] = arteId;
+        Avisar();
+        return Task.CompletedTask;
+    }
     public Task<ResultadoDaPublicacao> PublicarAsync(Cliente c, PedidoDePublicacao pedido) => V1.PublicarAsync(c, pedido);
     public Task<RodadaDoMotor> RodarMotorAsync(Cliente c) => V1.RodarMotorAsync(c);
     public Task SimularVeiculacaoAsync(Cliente c, int dias) => throw new NotSupportedException("a veiculação é real: ative a campanha no Gerenciador e a carga diária lê a Meta.");
