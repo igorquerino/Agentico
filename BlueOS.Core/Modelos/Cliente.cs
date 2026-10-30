@@ -45,6 +45,8 @@ public sealed class Cliente
     /// precisam de um: f1 só MOFU; f2 MOFU e BOFU; f3 TOFU, MOFU e BOFU. Cada conjunto do Start leva o piloto
     /// da etapa dele (1 anúncio por conjunto, AD-MT-17).</summary>
     public Dictionary<Etapa, string> Pilotos { get; set; } = new();
+    /// <summary>O estado do Start automático (o condutor): vive na sessão do gestor, não vai para a API.</summary>
+    [System.Text.Json.Serialization.JsonIgnore] public EstadoDaAutomacao Automacao { get; set; } = new();
 
     public Publicacao? Publicacao { get; set; }
 
@@ -356,6 +358,25 @@ public sealed class Recomendacao
     public DateTime? DecididaEm { get; set; }
     public string? Motivo { get; set; }
     public string? ResultadoMeta { get; set; }
+}
+
+/* ---- o Start automático (o condutor preenche o que falta e liga o agente) ---- */
+
+public enum PassoDoStart { Parado, Lendo, Ficha, Copy, Design, Campanha, Modo, Pronto, Parou }
+
+/// <summary>Onde o Start automático está: o card mostra o passo e a mensagem; `PrecisaDeVoce` é o que só gente
+/// resolve (logo, conta, política de privacidade) e parou o condutor.</summary>
+public sealed class EstadoDaAutomacao
+{
+    public bool EmCurso { get; set; }
+    public PassoDoStart Passo { get; set; } = PassoDoStart.Parado;
+    public string Mensagem { get; set; } = "";
+    public string? PrecisaDeVoce { get; set; }
+    public List<string> Trilha { get; } = new();
+    public DateTime? IniciadoEm { get; set; }
+    public DateTime? TerminadoEm { get; set; }
+    public bool Parou => Passo == PassoDoStart.Parou;
+    public bool Pronto => Passo == PassoDoStart.Pronto;
 }
 
 /* ---- os formulários de cadastro da Meta (leadgen_forms da página do cliente) ---- */

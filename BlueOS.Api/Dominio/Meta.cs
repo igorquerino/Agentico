@@ -33,6 +33,42 @@ public sealed class Meta(Db db, IHttpClientFactory fabrica, IConfiguration cfg)
         return saida;
     }
 
+    /* ---- o token do squad, conferido na Meta --------------------------------------
+       O fluxo só sai de Assets com o token do squad conferido. O V1 confere pela rota
+       token-meta; aqui a API confere direto na Graph (GET /me) e guarda por 15 min
+       por token, para a carteira (448 clientes, 9 squads) custar 9 chamadas, não 448. */
+    static readonly System.Collections.Concurrent.ConcurrentDictionary<string, (bool Ok, DateTime Em)> TokensConferidos = new();
+
+    public async Task<bool> TokenValidoAsync(string token)
+    {
+        if (TokensConferidos.TryGetValue(token, out var v) && DateTime.UtcNow - v.Em < TimeSpan.FromMinutes(15)) return v.Ok;
+        bool ok;
+        try { var me = await Get("me?fields=id,name", token); ok = me.TryGetProperty("id", out _); }
+        catch (InvalidOperationException) { ok = false; }
+        catch (HttpRequestException) { return TokensConferidos.TryGetValue(token, out var antigo) ? antigo.Ok : false; }
+        TokensConferidos[token] = (ok, DateTime.UtcNow);
+        return ok;
+    }
+
+    /// <summary>Marca em cada cliente se o token do squad dele está conferido na Meta (Conta.TokenValido).</summary>
+    public async Task MarcarTokensAsync(IEnumerable<Cliente> clientes)
+    {
+        var lista = clientes.ToList();
+        if (lista.Count == 0) return;
+        var linhas = await db.ListaAsync("select upper(trim(squad_nome)) as squad_nome, meta_access_token, atualizado_em from public.trafego_integracoes where coalesce(meta_access_token, '') <> ''",
+            r => (Squad: r.S("squad_nome") ?? "", Token: r.S("meta_access_token") ?? "", Em: r.Dt("atualizado_em")));
+        var validade = new Dictionary<string, bool>();
+        await Task.WhenAll(linhas.Select(l => l.Token).Distinct().Select(async t => { var ok = await TokenValidoAsync(t); lock (validade) validade[t] = ok; }));
+        var porSquad = linhas.ToDictionary(l => l.Squad, l => (Valido: validade.GetValueOrDefault(l.Token), l.Em));
+        foreach (var c in lista)
+        {
+            var squads = c.Squads.Concat([c.Squad]).Select(s => (s ?? "").Trim().ToUpperInvariant()).Where(s => s.Length > 0);
+            var achado = squads.Select(s => porSquad.TryGetValue(s, out var x) ? x : ((bool, DateTime?)?)null).FirstOrDefault(x => x is not null);
+            if (achado is { } a) { c.Conta.TokenValido = a.Item1; c.Conta.TokenConferidoEm = a.Item2 ?? DateTime.Now; }
+            else { c.Conta.TokenValido = null; }
+        }
+    }
+
     async Task<JsonElement> Get(string caminho, string token)
     {
         var http = fabrica.CreateClient("meta");

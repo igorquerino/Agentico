@@ -55,7 +55,7 @@
     <div class="grade-cartoes">
         @foreach (var c in Filtrados)
         {
-            <CartaoCliente @key="c.Slug" Cliente="c" Estagio="EstagioDe(c)" Pendencias="Estagios.PendenciasDoEstagio(c, Api.Parametros)" Abrir="Abrir" />
+            <CartaoCliente @key="c.Slug" Cliente="c" Api="Api" Estagio="EstagioDe(c)" Pendencias="Estagios.PendenciasDoEstagio(c, Api.Parametros)" Abrir="Abrir" IniciarStart="IniciarStart" />
         }
     </div>
 }
@@ -202,6 +202,24 @@ else
     }
 
     void Fechar() { sel = null; erro = null; }
+
+    /* ---- o Start automático, a partir do card ------------------------------------
+       O condutor roda em segundo plano e avisa a cada passo; a carteira troca a
+       instância do cliente pela lida inteira (ficha, lotes, artes) e redesenha. */
+    Task IniciarStart(PedidoDeStart pedido)
+    {
+        erro = null;
+        var condutor = new Condutor(Api);
+        _ = condutor.ConduzirAsync(pedido.Cliente, pedido.Plano, atual => InvokeAsync(() => { Trocar(atual); StateHasChanged(); }));
+        return Task.CompletedTask;
+    }
+
+    void Trocar(Cliente atual)
+    {
+        var i = clientes.FindIndex(x => x.Slug == atual.Slug);
+        if (i >= 0 && !ReferenceEquals(clientes[i], atual)) clientes[i] = atual;
+        if (sel is not null && sel.Slug == atual.Slug && !ReferenceEquals(sel, atual)) sel = atual;
+    }
 
     async Task CriarCliente()
     {

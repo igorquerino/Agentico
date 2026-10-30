@@ -27,6 +27,37 @@ public static class Nichos
 
     public static bool Valido(string? v) => v is not null && Slugs.Contains(v);
 
+    /* O nicho sugerido pelo texto da ficha (setor do ICP, segmento, descrição do produto, nome): o Start
+       automático propõe e o gestor confirma. Palavras do mais específico ao mais genérico; nada casou = "outro". */
+    static readonly (string Slug, string[] Marcas)[] Pistas =
+    [
+        ("imobiliario", ["imobili", "imovel", "imoveis", "corretor", "loteamento", "incorporadora"]),
+        ("saude", ["saude", "clinic", "medic", "odont", "dentist", "hospital", "fisioter", "psicolog", "nutri"]),
+        ("educacao", ["escola", "curso", "educa", "faculdade", "ensino", "treinamento", "mentoria"]),
+        ("financeiro-credito-seguros", ["credito", "seguro", "seguradora", "banco", "emprest", "consorcio", "fintech", "financiamento"]),
+        ("contabil-financeiro", ["contab", "fiscal", "tribut", "bpo financeiro"]),
+        ("juridico", ["advoc", "juridic", "direito", "escritorio de advocacia"]),
+        ("construcao-engenharia", ["constru", "engenhar", "obra", "arquitet", "reforma"]),
+        ("automotivo", ["automot", "veicul", "carro", "oficina", "concession", "locadora de carro", "locacao de veic"]),
+        ("beleza-estetica", ["belez", "estetic", "salao", "cosmet", "barbearia"]),
+        ("alimentacao-food", ["aliment", "restaurant", "food", "delivery", "comida", "lanchonete", "padaria"]),
+        ("industria-logistica", ["industria", "logistic", "transport", "frota", "fabric", "armazem"]),
+        ("marketing-agencias", ["marketing", "agencia", "trafego", "midia", "publicidade", "branding"]),
+        ("varejo-distribuicao", ["varejo", "loja", "distribui", "atacado", "e-commerce", "ecommerce", "franquia"]),
+        ("rh-gestao-pessoas", ["recrut", "gestao de pessoas", "recursos humanos", "departamento pessoal", " rh "]),
+        ("tecnologia-infra-dev", ["software", "saas", "tecnolog", "aplicativo", "app ", "sistema", "plataforma", "startup", "dados", "monitoramento"]),
+        ("servicos-profissionais", ["consultor", "servico", "assessor", "terceiriz"]),
+    ];
+
+    public static string Sugerir(string? texto)
+    {
+        var t = " " + Motor.Regua.Normalizar(texto) + " ";
+        if (t.Trim().Length == 0) return "outro";
+        foreach (var (slug, marcas) in Pistas)
+            if (marcas.Any(m => t.Contains(Motor.Regua.Normalizar(m).Length == 0 ? m : (m.StartsWith(' ') || m.EndsWith(' ') ? m : Motor.Regua.Normalizar(m))))) return slug;
+        return "outro";
+    }
+
     static readonly Dictionary<string, string> Acento = new()
     {
         ["alimentacao"] = "alimentação", ["estetica"] = "estética", ["construcao"] = "construção", ["contabil"] = "contábil",

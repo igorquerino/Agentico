@@ -114,17 +114,22 @@ var api = app.MapGroup("/api").AddEndpointFilter(async (ctx, next) =>
 
 static string UserId(HttpContext c) => (string)c.Items["userId"]!;
 
-api.MapGet("/carteira", async (HttpContext c, Escopo escopo, Carteira carteira) =>
+api.MapGet("/carteira", async (HttpContext c, Escopo escopo, Carteira carteira, Meta meta) =>
 {
     var esc = await escopo.DoUsuarioAsync(UserId(c));
-    return Results.Ok(await carteira.ListarAsync(esc));
+    var lista = await carteira.ListarAsync(esc);
+    /* o token do squad conferido na Meta é o que tira o cliente de Assets: 1 chamada por token, com cache */
+    try { await meta.MarcarTokensAsync(lista); } catch (Exception e) { app.Logger.LogWarning("tokens dos squads não conferidos: {Motivo}", e.Message); }
+    return Results.Ok(lista);
 });
 
-api.MapGet("/clientes/{slug}", async (string slug, HttpContext c, Escopo escopo, Carteira carteira) =>
+api.MapGet("/clientes/{slug}", async (string slug, HttpContext c, Escopo escopo, Carteira carteira, Meta meta) =>
 {
     var esc = await escopo.DoUsuarioAsync(UserId(c));
     var cli = await carteira.ObterAsync(esc, slug);
-    return cli is null ? Results.Json(new { error = "cliente fora do seu escopo" }, statusCode: 403) : Results.Ok(cli);
+    if (cli is null) return Results.Json(new { error = "cliente fora do seu escopo" }, statusCode: 403);
+    try { await meta.MarcarTokensAsync([cli]); } catch (Exception e) { app.Logger.LogWarning("token do squad não conferido: {Motivo}", e.Message); }
+    return Results.Ok(cli);
 });
 
 api.MapGet("/clientes/{slug}/estrutura", async (string slug, HttpContext c, Escopo escopo, Carteira carteira) =>

@@ -22,23 +22,30 @@ public sealed class Carteira(Db db)
         var squadsSql = esc.Global
             ? ""
             : Sql.Fmt($" and cs.squad_id = any({ids ?? []})");
-        var extras = !detalhe ? "" : """
+        /* As artes e os lotes de copy entram na LISTA tambem (enxutos), porque o estagio do card depende deles:
+           Copy pronta = peca aprovada por etapa; Design = artes + pilotos. No detalhe vem tudo. */
+        var limiteArtes = detalhe ? 60 : 6;
+        var limiteLotes = detalhe ? 20 : 5;
+        var soAprovadas = detalhe ? "" : " and p.aprovada";
+        var extras = $"""
             ,
                (select json_agg(json_build_object('id', p.id, 'lote', p.lote, 'numero', p.numero, 'funil', p.funil, 'formato', p.formato, 'url', p.storage_url, 'criado_em', p.created_at, 'copy_peca_id', p.copy_peca_id, 'template_id', p.template_id) order by p.created_at desc)
                   from (select x.id, y.numero as lote, x.numero, x.funil, x.formato, x.storage_url, x.created_at, x.copy_peca_id::text as copy_peca_id, x.template_id
                         from public.designer_pecas x join public.designer_lotes y on y.id = x.lote_id
-                        where y.cliente_id = c.cliente_id and x.storage_url is not null order by x.created_at desc limit 60) p)::text as artes,
+                        where y.cliente_id = c.cliente_id and x.storage_url is not null order by x.created_at desc limit {limiteArtes}) p)::text as artes,
                (select json_agg(json_build_object('lote_id', l.lote_id, 'nome', l.nome, 'briefing', l.briefing, 'modelo', l.modelo, 'criado_em', l.criado_em,
                         'tokens_in', l.tokens_in, 'tokens_out', l.tokens_out,
                         'pecas', (select json_agg(json_build_object('peca_id', p.peca_id, 'tipo', i.tipo, 'funil', i.funil, 'ordem', p.ordem, 'headline', p.headline,
                                     'corpo', p.corpo, 'cta', p.cta, 'aprovada', p.aprovada, 'crivo_ok', p.crivo_ok, 'angulo_headline', p.angulo_headline,
                                     'papel_sub', p.papel_sub, 'tipo_cta', p.tipo_cta) order by i.tipo, i.funil, p.ordem)
-                                  from public.copy_lote_item i join public.copy_peca p on p.item_id = i.item_id where i.lote_id = l.lote_id)) order by l.criado_em)
-                  from (select * from public.copy_lote k where k.cliente_id = c.cliente_id order by k.criado_em desc limit 20) l)::text as lotes,
+                                  from public.copy_lote_item i join public.copy_peca p on p.item_id = i.item_id where i.lote_id = l.lote_id{soAprovadas})) order by l.criado_em)
+                  from (select * from public.copy_lote k where k.cliente_id = c.cliente_id order by k.criado_em desc limit {limiteLotes}) l)::text as lotes
+            """ + (!detalhe ? "" : """
+            ,
                (select json_agg(r order by r.criado_em desc) from (
             """ + Automacao.RecsSql("c.cliente_slug") + """
                ) r)::text as recomendacoes
-            """;
+            """);
         var filtroSlug = slug is null ? "" : Sql.Fmt($" and c.cliente_slug = {slug}");
         return $"""
             select c.cliente_id::text as cliente_id, c.cliente_slug, c.cliente_nome, c.cliente_status_atual::text as cliente_status_atual, c.cliente_desde, c.cliente_criado_em,

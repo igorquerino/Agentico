@@ -37,6 +37,15 @@ A carteira mostra um card por cliente com o **estágio** em que ele está (o pri
 incompleto) e o que falta. Abrir um cliente não muda de tela: o stepper de 7 etapas fica no
 topo e cada etapa rende abaixo.
 
+0. **Start automático, pelo card.** O card é vertical, com a logo no centro; quem está em automação (ou
+   entrando nela) ganha um feixe de luz girando em volta da logo. O botão **Start** abre um painel no
+   próprio card: confirma nicho, budget e a régua de MQL (proposta pelo critério gravado ou pelo
+   formulário da Meta, com cada resposta como chip forte/média/eliminatória), escolhe o modo do agente
+   (recomenda, sombra ou automático; o automático pede confirmação do que ele faz sozinho) e dispara o
+   **condutor** (`Core/Fluxo/Condutor.cs`): grava a ficha, escreve a copy das etapas da faixa e aprova o
+   que passa no crivo, desenha um criativo por etapa e põe cada um na vaga certa, publica o Start
+   pausado e liga o agente no modo escolhido. O que só gente resolve (logo e assets, conta, política de
+   privacidade) para o condutor com "precisa de você: ...". A trilha fica no card.
 1. **Chegada**: o cliente entrou.
 2. **Assets**: logo principal, logo variação, telas do produto (bucket `brand-assets`), conta
    de anúncios (`act_`), página, token do squad conferido na Meta, lista do cliente, site/pixel,

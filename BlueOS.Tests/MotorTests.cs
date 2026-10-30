@@ -3,6 +3,7 @@ using BlueOS.Core.Copy;
 using BlueOS.Core.Fluxo;
 using BlueOS.Core.Modelos;
 using BlueOS.Core.Motor;
+using BlueOS.Core.Setup;
 
 namespace BlueOS.Tests;
 
@@ -251,6 +252,47 @@ public class ReguaTests
 
 public class FluxoDemoTests
 {
+    [Fact]
+    public async Task O_start_automatico_leva_o_cliente_da_copy_ate_a_automacao()
+    {
+        var api = new DemoApi();
+        var c = (await api.ObterClienteAsync("horizonte-imoveis"))!;
+        Assert.Equal(Estagio.Copy, Estagios.DoCliente(c, api.Parametros));
+        var s = Condutor.Sugerir(c, null);
+        Assert.Equal("imobiliario", s.NichoSlug);
+        Assert.NotNull(s.Regua);
+        var condutor = new Condutor(api);
+        var passos = new List<PassoDoStart>();
+        await condutor.ConduzirAsync(c, new PlanoDoStart(s.NichoSlug, s.BudgetMensal, s.Regua, s.TetoMql, ModoDeExecucao.Sombra), atual => passos.Add(atual.Automacao.Passo));
+        Assert.Null(c.Automacao.PrecisaDeVoce);
+        Assert.Equal(PassoDoStart.Pronto, c.Automacao.Passo);
+        Assert.Contains(PassoDoStart.Copy, passos);
+        Assert.Contains(PassoDoStart.Design, passos);
+        Assert.Contains(PassoDoStart.Campanha, passos);
+        Assert.Equal(Estagio.Automacao, Estagios.DoCliente(c, api.Parametros));
+        Assert.Equal(ModoDeExecucao.Sombra, c.Modo);
+        Assert.All(Estagios.ValidarAssentos(c, api.Parametros), a => Assert.True(a.Ok, a.Motivo));
+        Assert.False(c.Automacao.EmCurso);
+    }
+
+    [Fact]
+    public void A_regua_proposta_pelo_formulario_elimina_as_respostas_negativas()
+    {
+        var f = new FormularioDaMeta("1", "Leads", "ACTIVE", 10, null,
+        [
+            new PerguntaDoFormulario("qual_o_seu_cargo?", "Qual o seu cargo?", "CUSTOM", [new("dono", "Dono"), new("gerente", "Gerente"), new("estudante", "Estudante"), new("outro", "Outro")]),
+            new PerguntaDoFormulario("email", "Email", "EMAIL", []),
+        ]);
+        var r = Condutor.ProporRegua(f);
+        var q = Assert.Single(r.Perguntas);
+        Assert.Equal("qual_o_seu_cargo?", q.Nome);
+        Assert.Equal(["dono", "gerente"], q.Forte);
+        Assert.Equal(["estudante", "outro"], q.Elim);
+        Assert.Equal("imobiliario", Nichos.Sugerir("Corretora de imóveis em Goiânia"));
+        Assert.Equal("saude", Nichos.Sugerir("Clínica odontológica"));
+        Assert.Equal("outro", Nichos.Sugerir(""));
+    }
+
     [Fact]
     public async Task O_cliente_de_referencia_esta_em_automacao_e_o_motor_recomenda()
     {

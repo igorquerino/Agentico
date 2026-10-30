@@ -1,23 +1,24 @@
-@* O card do cliente na carteira: de início mostra em que estágio ele se encontra. *@
-<article class="cartao @("estagio-" + (int)Estagio)" @onclick="() => Abrir.InvokeAsync(Cliente)" tabindex="0" @onkeydown="TeclaAbrir" aria-label="@($"{Cliente.Nome}: {Estagios.Descricao(Estagio).Titulo}")">
-    <header>
-        <div class="cartao-logo">
-            @if (Cliente.Assets.FirstOrDefault(a => a.Tipo == TipoDeAsset.LogoPrincipal && a.Url is not null) is { } logo)
-            {
-                <img src="@logo.Url" alt="" />
-            }
-            else
-            {
-                <span>@Iniciais(Cliente.Nome)</span>
-            }
+@* O card do cliente na carteira: vertical, com a logo no centro. Quem está em automação (ou entrando nela pelo
+   Start) ganha um feixe de luz girando em volta da logo. O botão Start abre o painel ali mesmo, sem mudar de tela. *@
+<article class="cartao vertical @("estagio-" + (int)Estagio) @(Ligada ? "ligada" : "")" @onclick="AbrirCliente" tabindex="0" @onkeydown="TeclaAbrir" aria-label="@($"{Cliente.Nome}: {Estagios.Descricao(Estagio).Titulo}")">
+    <div class="cartao-topo">
+        <div class="aura @(Ligada ? "ligada" : "") @(Auto.EmCurso ? "rapida" : "")" title="@(Auto.EmCurso ? "Start em curso" : Ligada ? "automação ligada" : "")">
+            <div class="cartao-logo">
+                @if (Cliente.Assets.FirstOrDefault(a => a.Tipo == TipoDeAsset.LogoPrincipal && a.Url is not null) is { } logo)
+                {
+                    <img src="@logo.Url" alt="" />
+                }
+                else
+                {
+                    <span>@Iniciais(Cliente.Nome)</span>
+                }
+            </div>
         </div>
-        <div class="cartao-nome">
-            <h3>@Cliente.Nome</h3>
-            <div class="text-3 mini">@(Cliente.Squads.Count > 0 ? string.Join(" + ", Cliente.Squads) : Cliente.Squad) &middot; @Cliente.Status.Replace('_', ' ') &middot; desde @Cliente.Desde.ToString("dd/MM")</div>
-        </div>
+        <h3>@Cliente.Nome</h3>
+        <div class="text-3 mini">@(Cliente.Squads.Count > 0 ? string.Join(" + ", Cliente.Squads) : Cliente.Squad) &middot; @Cliente.Status.Replace('_', ' ') &middot; desde @Cliente.Desde.ToString("dd/MM")</div>
         <span class="pilula pilula-estagio">@Estagios.Descricao(Estagio).Curto</span>
-    </header>
-    <div class="cartao-linha">
+    </div>
+    <div class="cartao-linha centro">
         <span class="pilula @(Cliente.NichoSlug is null ? "pilula-warn" : "")">@(Cliente.NichoSlug is null ? "sem nicho" : Nichos.Rotulo(Cliente.NichoSlug).ToLowerInvariant())</span>
         <span class="pilula @(Cliente.BudgetMensal is null ? "pilula-warn" : "")">@(Cliente.BudgetMensal is null ? "sem budget" : Dinheiro.ReaisCurto(Dinheiro.CentavosDe(Cliente.BudgetMensal.Value)) + " por mês")</span>
         <span class="pilula @(Cliente.ContaConectada ? "pilula-ok" : "pilula-err")">@(Cliente.ContaConectada ? "conta conectada" : "sem conta de anúncios")</span>
@@ -29,7 +30,15 @@
         }
     </ol>
     <footer>
-        @if (Estagio == Estagio.Automacao)
+        @if (Auto.EmCurso)
+        {
+            <span class="text-2">&#10227; @Auto.Mensagem</span>
+        }
+        else if (Auto.Parou)
+        {
+            <span class="warn">@Auto.Mensagem</span>
+        }
+        else if (Estagio == Estagio.Automacao)
         {
             var pend = Cliente.Recomendacoes.Count(r => r.Estado == EstadoDaRecomendacao.Pendente);
             <span class="@(pend > 0 ? "warn" : "ok")">@(pend > 0 ? $"{pend} decisão(ões) do agente esperando você" : "em automação contínua: nada esperando você")</span>
@@ -39,14 +48,60 @@
             <span class="text-2">falta: @string.Join(", ", Pendencias.Take(3))@(Pendencias.Count > 3 ? $" e mais {Pendencias.Count - 3}" : "")</span>
         }
     </footer>
+    @if (painel)
+    {
+        <PainelStart Cliente="Cliente" Api="Api" IniciarStart="Disparar" Fechar="() => painel = false" />
+    }
+    else
+    {
+        <div class="cartao-acoes" @onclick:stopPropagation="true">
+            @if (Auto.EmCurso)
+            {
+                <span class="pilula pilula-ok">Start em curso</span>
+            }
+            else if (Estagio == Estagio.Automacao)
+            {
+                <span class="pilula pilula-ok">agente: @Condutor.Rotulo(Cliente.Modo)</span>
+                <button type="button" class="btn btn-ghost btn-mini" @onclick="() => painel = true">mudar</button>
+            }
+            else
+            {
+                <button type="button" class="btn btn-destaque btn-start" @onclick="() => painel = true" title="o agente preenche o que falta e liga a automação">&#9654; Start</button>
+            }
+            @if (Auto.Trilha.Count > 0)
+            {
+                <button type="button" class="btn btn-ghost btn-mini" @onclick="() => trilha = !trilha">@(trilha ? "esconder" : "ver") a trilha</button>
+            }
+        </div>
+        @if (trilha && Auto.Trilha.Count > 0)
+        {
+            <ol class="trilha-start mini text-3" @onclick:stopPropagation="true">
+                @foreach (var t in Auto.Trilha) { <li>@t</li> }
+            </ol>
+        }
+    }
 </article>
 
 @code {
     [Parameter] public required Cliente Cliente { get; set; }
+    [Parameter] public required IBlueApi Api { get; set; }
     [Parameter] public Estagio Estagio { get; set; }
     [Parameter] public List<string> Pendencias { get; set; } = new();
     [Parameter] public EventCallback<Cliente> Abrir { get; set; }
+    [Parameter] public EventCallback<PedidoDeStart> IniciarStart { get; set; }
+
+    bool painel; bool trilha;
+    EstadoDaAutomacao Auto => Cliente.Automacao;
+    /// <summary>O feixe de luz: automação ligada ou entrando nela pelo Start.</summary>
+    bool Ligada => Estagio == Estagio.Automacao || Auto.EmCurso || Auto.Pronto;
 
     static string Iniciais(string nome) => string.Concat(nome.Split(' ', StringSplitOptions.RemoveEmptyEntries).Take(2).Select(p => char.ToUpperInvariant(p[0])));
-    Task TeclaAbrir(KeyboardEventArgs e) => e.Key is "Enter" or " " ? Abrir.InvokeAsync(Cliente) : Task.CompletedTask;
+    Task AbrirCliente() => painel ? Task.CompletedTask : Abrir.InvokeAsync(Cliente);
+    Task TeclaAbrir(KeyboardEventArgs e) => !painel && e.Key is "Enter" or " " ? Abrir.InvokeAsync(Cliente) : Task.CompletedTask;
+
+    async Task Disparar(PedidoDeStart pedido)
+    {
+        painel = false; trilha = false;
+        await IniciarStart.InvokeAsync(pedido);
+    }
 }
