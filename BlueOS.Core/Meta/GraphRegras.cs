@@ -24,7 +24,7 @@ public sealed class ErroDaMeta : Exception
     public bool Transitorio { get; }
     public string? Titulo { get; }
     public string? MensagemAoUsuario { get; }
-    public ClasseDoErro Classe => GraphRegras.ClasseDe(Codigo, Message);
+    public ClasseDoErro Classe => GraphRegras.ClasseDe(Codigo, Message, Transitorio);
 
     public ErroDaMeta(string frase, int? codigo = null, int? subcodigo = null, bool transitorio = false, string? titulo = null, string? mensagemAoUsuario = null)
         : base(frase)
@@ -55,7 +55,8 @@ public static class GraphRegras
     public static readonly JsonSerializerOptions JsonComoJs = new() { Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
 
     static readonly HashSet<int> Permanentes = [100, 10, 200, 294, 368, 803, 1487000, 1487390, 2635];
-    static readonly HashSet<int> Temporarios = [1, 2, 4, 17, 32, 341, 613, 80000, 80004];
+    /* 80000-80014: os limites por caso de uso (BUC) da Meta, cada família de endpoint com o seu código. */
+    static readonly HashSet<int> Temporarios = [1, 2, 4, 17, 32, 341, 613, 80000, 80001, 80002, 80003, 80004, 80005, 80006, 80008, 80009, 80014];
     static readonly HashSet<int> Credencial = [190, 102, 463, 467];
     static readonly Regex TemporarioPelaFrase = new("rate limit|too many calls|temporarily unavailable|try again later", RegexOptions.IgnoreCase | RegexOptions.Compiled);
     static readonly Regex AppEmDesenvolvimentoPelaFrase = new("modo de desenvolvimento|development mode", RegexOptions.IgnoreCase | RegexOptions.Compiled);
@@ -92,12 +93,13 @@ public static class GraphRegras
     }
 
     /// <summary>A classe do erro pelo código da Graph (Tráfego 3.5). Desconhecido reabre a reserva: esconder
-    /// erro novo atrás de "permanente" seria pior.</summary>
-    public static ClasseDoErro ClasseDe(int? codigo, string? msg)
+    /// erro novo atrás de "permanente" seria pior. `is_transient` da Meta vale como Temporário, salvo credencial.</summary>
+    public static ClasseDoErro ClasseDe(int? codigo, string? msg, bool transitorio = false)
     {
+        if (codigo is { } cr && Credencial.Contains(cr)) return ClasseDoErro.Credencial;
+        if (transitorio) return ClasseDoErro.Temporario;
         if (codigo is { } c)
         {
-            if (Credencial.Contains(c)) return ClasseDoErro.Credencial;
             if (Temporarios.Contains(c)) return ClasseDoErro.Temporario;
             if (Permanentes.Contains(c)) return ClasseDoErro.Permanente;
             if (c is >= 200 and <= 299) return ClasseDoErro.Permanente;
@@ -167,14 +169,63 @@ public static class GraphRegras
 
     /// <summary>O orçamento que ESTA ação quer gravar, em centavos, ou null quando não mexe em verba. Por CAMPO, e
     /// não por tipo: ação nova que mexa em verba e não passe por aqui volta a furar o anti-ban.</summary>
-    public static long? OrcamentoPedido(IReadOnlyDictionary<string, object?> parametros)
+    public static long? OrcamentoPedido(IReadOnlyDictionary<string, object?> parametros) => OrcamentoPedidoComTipo(parametros)?.Centavos;
+
+    /// <summary>O orçamento pedido e se ele é DIÁRIO (`daily_budget*`) ou vitalício (`lifetime_budget*`).</summary>
+    public static (long Centavos, bool Diario)? OrcamentoPedidoComTipo(IReadOnlyDictionary<string, object?> parametros)
     {
         foreach (var chave in new[] { "daily_budget_cents", "daily_budget", "lifetime_budget_cents", "lifetime_budget" })
         {
             if (!parametros.TryGetValue(chave, out var v) || v is null) continue;
-            if (double.TryParse(Texto(v), NumberStyles.Float, CultureInfo.InvariantCulture, out var n) && double.IsFinite(n) && n > 0) return (long)Math.Round(n);
+            if (double.TryParse(Texto(v), NumberStyles.Float, CultureInfo.InvariantCulture, out var n) && double.IsFinite(n) && n > 0) return ((long)Math.Round(n), chave.StartsWith("daily_", StringComparison.Ordinal));
         }
         return null;
+    }
+
+    public enum VereditoDaVerba { Passa, SemLeitura, SemVerbaDoMesmoTipo, SaltoGrande }
+
+    /// <summary>ANTI-BAN (aplicar-meta.ts): o salto de verba acima de 5× não passa. A comparação é da verba do MESMO tipo
+    /// (diária com diária, vitalícia com vitalícia): a Graph devolve "0" na diária de quem tem verba vitalícia, e não
+    /// devolve nenhuma em conjunto de campanha CBO. Falha FECHADA: sem ler a verba atual não passa (Temporário, a leitura
+    /// pode voltar); lida e sem verba do tipo pedido também não (o objeto não tem de onde subir: repetir não conserta).</summary>
+    public static (VereditoDaVerba Veredito, string? Frase) SaltoDeVerba(IReadOnlyDictionary<string, object?> parametros, bool lido, string? diariaAtual, string? vitaliciaAtual)
+    {
+        if (OrcamentoPedidoComTipo(parametros) is not { } pedido) return (VereditoDaVerba.Passa, null);
+        if (!lido)
+            return (VereditoDaVerba.SemLeitura, "não consegui ler a verba atual do conjunto na Meta: mudar verba sem saber de onde é risco de bloqueio da conta. Nada foi alterado; tente de novo em instantes.");
+        var texto = pedido.Diario ? diariaAtual : vitaliciaAtual;
+        long? atual = long.TryParse(texto, NumberStyles.Integer, CultureInfo.InvariantCulture, out var a) && a > 0 ? a : null;
+        if (atual is null)
+            return (VereditoDaVerba.SemVerbaDoMesmoTipo, pedido.Diario
+                ? "o conjunto não tem verba diária própria na Meta (está numa campanha CBO, ou tem verba vitalícia): não há de onde subir a diária, nem a dele nem a da cópia. Nada foi alterado; rode o motor de novo para a recomendação sair sem verba própria."
+                : "o objeto não tem verba vitalícia na Meta: não há de onde subir a verba vitalícia. Nada foi alterado.");
+        if (pedido.Centavos > atual.Value * 5)
+        {
+            var pct = ((double)pedido.Centavos / atual.Value * 100 - 100).ToString("0", CultureInfo.InvariantCulture);
+            return (VereditoDaVerba.SaltoGrande, $"aumento de verba grande demais num passo só (+{pct}%) — risco de bloqueio da conta. Suba em incrementos de até 5x.");
+        }
+        return (VereditoDaVerba.Passa, null);
+    }
+
+    /// <summary>A resposta da Graph em JSON. O bloco `error` vira ErroDaMeta; e um status fora de 2xx SEM o bloco (corpo
+    /// vazio, JSON sem erro) também, porque tratar 5xx vazio como sucesso dava pausa 'aplicada' com o conjunto gastando.</summary>
+    public static JsonElement LerResposta(string? texto, int status)
+    {
+        JsonElement j;
+        int? Codigo() => status >= 500 || status == 429 ? 2 : null;
+        try { j = JsonDocument.Parse(string.IsNullOrWhiteSpace(texto) ? "{}" : texto).RootElement.Clone(); }
+        catch
+        {
+            var frase = $"a Meta respondeu algo que não é JSON ({status}).";
+            throw new ErroDaMeta(frase, Codigo(), mensagemAoUsuario: frase);
+        }
+        if (j.ValueKind == JsonValueKind.Object && j.TryGetProperty("error", out var e)) throw ErroDaMeta.De(e);
+        if (status is < 200 or > 299)
+        {
+            var frase = $"a Meta respondeu {status} sem dizer o erro: a ação não foi confirmada.";
+            throw new ErroDaMeta(frase, Codigo(), mensagemAoUsuario: frase);
+        }
+        return j;
     }
 
     /// <summary>O caminho (relativo à Graph) e o corpo de cada ação. `null` = esta porta não executa.</summary>
@@ -200,9 +251,10 @@ public static class GraphRegras
             case "duplicate_campaign": case "duplicate_adset":
                 /* A cópia NASCE PAUSADA, sempre: duplicar já é abrir leilão novo. */
                 return ($"{id}/copies", new Dictionary<string, string> { ["deep_copy"] = "true", ["status_option"] = "PAUSED" });
-            case "ativar_copia":
+            case "ativar_copia": case "ativar_copia_ad":
                 /* O passo final de uma CRIAÇÃO do próprio motor (D1, Igor 11/10). Não é resume_adset: o motor nunca
-                   reativa o que alguém pausou. */
+                   reativa o que alguém pausou. `ativar_copia` é o conjunto da cópia; `ativar_copia_ad`, cada anúncio
+                   dela (na Graph é o mesmo POST; no MCP o tipo da entidade muda). */
                 return (id, Status("ACTIVE"));
             case "create_campaign":
                 return ($"{conta}/campaigns", ComoTexto());

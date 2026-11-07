@@ -62,38 +62,28 @@ public sealed class MetaMcp(IHttpClientFactory fabrica, IConfiguration cfg, ILog
         return resposta;
     }
 
-    /// <summary>JSON puro ou SSE: no SSE vale o último `data:` que seja um objeto JSON-RPC.</summary>
-    static JsonElement Envelope(string texto)
-    {
-        var t = texto.Trim();
-        if (t.StartsWith('{')) return JsonDocument.Parse(t).RootElement.Clone();
-        JsonElement? ultimo = null;
-        foreach (var linha in t.Split('\n'))
-        {
-            var l = linha.Trim();
-            if (!l.StartsWith("data:")) continue;
-            var json = l[5..].Trim();
-            if (!json.StartsWith('{')) continue;
-            try { ultimo = JsonDocument.Parse(json).RootElement.Clone(); } catch { }
-        }
-        return ultimo ?? throw new ErroDaMeta("o MCP da Meta respondeu sem JSON-RPC.");
-    }
+    /// <summary>JSON puro ou SSE (McpRegras.Envelope, com o `data:` de várias linhas juntado): vale o último evento JSON-RPC.</summary>
+    static JsonElement Envelope(string texto) => McpRegras.Envelope(texto) ?? throw new ErroDaMeta("o MCP da Meta respondeu sem JSON-RPC.");
 
     /* ---- as leituras que decidem a rota ------------------------------------------- */
 
-    /// <summary>Todas as contas do token (paginado), por 10 minutos.</summary>
+    /// <summary>Todas as contas do token (paginado), por 10 minutos. A lista que não chega ao fim (passou do teto de
+    /// páginas, ou o cursor se repete) LANÇA: guardá-la cortada faria "a conta não está no token" ser dito em falso.</summary>
     public async Task<List<ContaNoMcp>> ContasAsync(string token, string conversa)
     {
         var k = Chave(token);
         if (ContasCache.TryGetValue(k, out var g) && DateTime.UtcNow - g.Em < TimeSpan.FromMinutes(10)) return g.Contas;
-        var todas = new List<ContaNoMcp>(); string? cursor = null;
-        for (var pagina = 0; pagina < 20; pagina++)
+        var todas = new List<ContaNoMcp>(); string? cursor = null; var vistos = new HashSet<string>();
+        for (var pagina = 0; ; pagina++)
         {
+            if (pagina >= McpRegras.MaxPaginasDeContas)
+                throw new ErroDaMeta($"o token do MCP alcança mais de {McpRegras.MaxPaginasDeContas * 100} contas de anúncio e a lista não terminou: não dá para confirmar a conta deste cliente. Nada foi feito.");
             var r = await ChamarAsync("ads_get_ad_accounts", McpRegras.ArgsDasContas(cursor, McpRegras.Comuns(conversa, "report_measure_or_look_up", "listar as contas de anúncio que este token alcança")), token, 60);
             if (!r.Ok) throw new ErroDaMeta(McpRegras.FraseDoMcp(r.Erro));
             todas.AddRange(McpRegras.Contas(r.Dados));
             cursor = McpRegras.ProximoCursor(r.Dados);
             if (cursor is null) break;
+            if (!vistos.Add(cursor)) throw new ErroDaMeta("a lista de contas do MCP da Meta repetiu a página: não dá para confirmar a conta deste cliente. Nada foi feito; tente de novo em instantes.");
         }
         ContasCache[k] = (DateTime.UtcNow, todas);
         return todas;

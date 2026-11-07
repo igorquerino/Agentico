@@ -1,4 +1,6 @@
+using BlueOS.Core.Meta;
 using BlueOS.Core.Modelos;
+using BlueOS.Core.Motor;
 
 namespace BlueOS.Core.Executor;
 
@@ -48,7 +50,23 @@ public sealed record Folga(
     int DiasRestantes,
     long? FolgaDiariaCentavos);
 
-public enum CodigoDaTrava { ContaNaoElegivel, ConjuntoNaoLido, ConjuntoComProblema, SemBudget, SemFolga, VerbaPorHora, EscritasPorRodada, TokenNaoServe, Isolamento }
+public enum CodigoDaTrava { ContaNaoElegivel, ConjuntoNaoLido, ConjuntoComProblema, SemBudget, SemFolga, VerbaPorHora, EscritasPorRodada, TokenNaoServe, Isolamento, ConjuntoNaoAtivo, CopiaAbaixoDoMinimo }
+
+/// <summary>Um conjunto como a carga o fotografou (`trafego_adset_estado`). Verba nula ou ≤ 0 = sem verba própria (CBO).</summary>
+public sealed record FotoDoConjunto(string AdsetId, string? Status, long? DiarioCentavos);
+
+/// <summary>O gasto de um conjunto num dia (`trafego_insight_dia`), em reais.</summary>
+public sealed record GastoDoDia(string? AdsetId, DateOnly Dia, decimal Gasto);
+
+/// <summary>Uma cópia que o motor já criou (ou pode ter criado: 'incerto'), como `trafego_motor_aplicacao` a guarda.</summary>
+public sealed record CopiaDoMotor(string Estado, string? CopiaId, long? VerbaPedida, bool VerbaAplicada, long? DiariaDoOriginal);
+
+/// <summary>O desfecho de uma escrita: o estado da reserva, a classe do erro e a espera antes de tentar de novo.</summary>
+public sealed record DesfechoDaEscrita(string Estado, ClasseDoErro? Classe, int AguardarMs)
+{
+    /// <summary>Repetir não conserta: a reserva não reabre (`resultado.permanente`, lido por Registro.FalhaPermanenteAsync).</summary>
+    public bool Permanente => Classe == ClasseDoErro.Permanente;
+}
 
 public sealed record Trava(bool Ok, CodigoDaTrava? Codigo, string? Motivo, IReadOnlyList<string> Avisos, long? CopiaCentavos);
 
@@ -74,7 +92,8 @@ public static class CodigoDaTravaExt
         CodigoDaTrava.ContaNaoElegivel => "conta_nao_elegivel", CodigoDaTrava.ConjuntoNaoLido => "conjunto_nao_lido",
         CodigoDaTrava.ConjuntoComProblema => "conjunto_com_problema", CodigoDaTrava.SemBudget => "sem_budget", CodigoDaTrava.SemFolga => "sem_folga",
         CodigoDaTrava.VerbaPorHora => "verba_por_hora", CodigoDaTrava.EscritasPorRodada => "escritas_por_rodada",
-        CodigoDaTrava.TokenNaoServe => "token_nao_serve", _ => "isolamento",
+        CodigoDaTrava.TokenNaoServe => "token_nao_serve", CodigoDaTrava.ConjuntoNaoAtivo => "conjunto_nao_ativo",
+        CodigoDaTrava.CopiaAbaixoDoMinimo => "copia_abaixo_do_minimo", _ => "isolamento",
     };
 }
 
@@ -99,6 +118,73 @@ public static class Travas
             FolgaDiaria(budgetMensalCentavos, gastoMesCentavos, ativas, diasRestantes));
     }
 
+    /// <summary>A folga do mês (D2) a partir do que o banco guarda: o budget, o gasto por conjunto e dia, a foto da carga e
+    /// as cópias que o motor já criou. As diárias ativas são: as verbas próprias dos conjuntos ACTIVE da foto; a estimativa
+    /// dos ACTIVE sem verba própria (CBO), pela média do que cada um gastou nos dias em que gastou nos últimos 7 dias; e a
+    /// verba das cópias do motor que a foto ainda não tem (criadas depois da carga), em qualquer status: a cópia PAUSED
+    /// é verba que um clique põe no ar, e cada DUPLICAR seguinte não pode contar com a folga inteira (falha fechada).</summary>
+    public static Folga FolgaDoMes(decimal? budgetMensalReais, IEnumerable<GastoDoDia> insights, IEnumerable<FotoDoConjunto> fotos, IEnumerable<CopiaDoMotor> copias, DateOnly hoje)
+    {
+        var inicioDoMes = new DateOnly(hoje.Year, hoje.Month, 1);
+        var seteDiasAtras = hoje.AddDays(-7);
+        var gastos = insights.ToList();
+        var foto = fotos.ToList();
+        var gasto = gastos.Where(i => i.Dia >= inicioDoMes).Sum(i => i.Gasto);
+        var ativos = foto.Where(f => f.Status == "ACTIVE").ToList();
+        var proprias = ativos.Sum(f => Math.Max(0, f.DiarioCentavos ?? 0));
+        var semVerba = ativos.Where(f => (f.DiarioCentavos ?? 0) <= 0).Select(f => f.AdsetId).ToHashSet();
+        var porConjunto = new Dictionary<string, (decimal Gasto, HashSet<DateOnly> Dias)>();
+        foreach (var i in gastos)
+        {
+            if (i.AdsetId is null || !semVerba.Contains(i.AdsetId) || i.Dia < seteDiasAtras || i.Dia >= hoje) continue;
+            (decimal Gasto, HashSet<DateOnly> Dias) c = porConjunto.TryGetValue(i.AdsetId, out var x) ? x : (0m, new HashSet<DateOnly>());
+            c.Gasto += i.Gasto; if (i.Gasto > 0) c.Dias.Add(i.Dia);
+            porConjunto[i.AdsetId] = c;
+        }
+        var estimadas = (long)Math.Round(porConjunto.Values.Sum(c => (double)c.Gasto * 100 / Math.Max(1, c.Dias.Count)));
+        var naFoto = foto.Select(f => f.AdsetId).ToHashSet();
+        var copiasForaDaFoto = VerbaDasCopiasForaDaFoto(copias, naFoto);
+        return MontarFolga(budgetMensalReais is > 0 ? Dinheiro.CentavosDe(budgetMensalReais.Value) : null, (long)Math.Round(gasto * 100),
+            proprias + copiasForaDaFoto, estimadas, DiasRestantesNoMes(hoje));
+    }
+
+    /// <summary>A verba diária das cópias do motor que a foto da carga ainda não tem: 'aplicada', 'incerto' (a cópia pode
+    /// existir) e 'em_voo' (outra recomendação criando a cópia agora). A cópia cuja verba entrou conta a verba pedida; a
+    /// que não entrou (ou ainda não se sabe) conta o maior entre a diária do original, que ela herda, e a pedida. Cópia já
+    /// na foto fica com a regra da foto; 'falhou' não criou nada.</summary>
+    public static long VerbaDasCopiasForaDaFoto(IEnumerable<CopiaDoMotor> copias, IReadOnlySet<string> naFoto)
+    {
+        long soma = 0;
+        foreach (var c in copias)
+        {
+            if (c.Estado is not ("aplicada" or "incerto" or "em_voo")) continue;
+            if (!string.IsNullOrEmpty(c.CopiaId) && naFoto.Contains(c.CopiaId)) continue;
+            var pedida = Math.Max(0, c.VerbaPedida ?? 0);
+            soma += c.VerbaAplicada && pedida > 0 ? pedida : Math.Max(Math.Max(0, c.DiariaDoOriginal ?? 0), pedida);
+        }
+        return soma;
+    }
+
+    /// <summary>O desfecho da escrita: 'aplicada' quando a Meta confirmou; 'incerto' quando ela pode ter feito (sem resposta,
+    /// recusa depois de passar no ensaio, ou o /copies recusado, que não ensaia e pode ter criado a cópia); 'falhou' só para a
+    /// recusa limpa, a única que reabre a reserva. Sem resposta é Temporário; sem classe é Desconhecido.</summary>
+    public static DesfechoDaEscrita Desfecho(TipoNaMeta tipo, bool ok, bool semResposta, bool alterou, bool recusaDaMeta, bool simulado, ClasseDoErro? classe, int aguardarMs)
+    {
+        if (ok) return new DesfechoDaEscrita("aplicada", null, aguardarMs);
+        var copiaSemCerteza = tipo == TipoNaMeta.DuplicateAdset && recusaDaMeta && !simulado;
+        var estado = semResposta || alterou || copiaSemCerteza ? "incerto" : "falhou";
+        var c = semResposta ? ClasseDoErro.Temporario : classe ?? ClasseDoErro.Desconhecido;
+        return new DesfechoDaEscrita(estado, c, aguardarMs > 0 ? aguardarMs : c == ClasseDoErro.Temporario ? 60_000 : 0);
+    }
+
+    /// <summary>A recomendação é uma FOTO: a árvore de agora tem de dar a mesma ação, as mesmas chaves e o mesmo vault
+    /// (decisao/route.ts do V1). Vault diferente, ou ausente na recomendação, é obsoleta.</summary>
+    public static bool Obsoleta(string acaoDeAntes, IEnumerable<string> chavesDeAntes, string? vaultDeAntes, string acaoDeAgora, IEnumerable<string> chavesDeAgora, string vaultDeAgora)
+    {
+        static string Juntas(IEnumerable<string> l) => string.Join(",", l.OrderBy(x => x, StringComparer.Ordinal));
+        return acaoDeAntes != acaoDeAgora || Juntas(chavesDeAntes) != Juntas(chavesDeAgora) || !string.Equals(vaultDeAntes, vaultDeAgora, StringComparison.Ordinal);
+    }
+
     public static Trava TravasDeDinheiro(TipoNaMeta tipo, long? pedidaCentavos, Folga folga, int mudancasNaHora, int escritasNaRodada, EstadoAoVivo vivo, LimitesDoAutomatico? limites)
     {
         var avisos = new List<string>();
@@ -120,7 +206,7 @@ public static class Travas
         if (vivo.Conjunto is null || string.IsNullOrEmpty(vivo.Conjunto.Status))
             return Nao(CodigoDaTrava.ConjuntoNaoLido, $"não consegui ler o conjunto na Meta agora{(vivo.Erro is not null ? $" ({vivo.Erro})" : "")}: verba não se abre no escuro.");
         if (vivo.Conjunto.Status != "ACTIVE")
-            return Nao(vivo.Conjunto.Status == "WITH_ISSUES" ? CodigoDaTrava.ConjuntoComProblema : CodigoDaTrava.ConjuntoNaoLido,
+            return Nao(vivo.Conjunto.Status == "WITH_ISSUES" ? CodigoDaTrava.ConjuntoComProblema : CodigoDaTrava.ConjuntoNaoAtivo,
                 $"o conjunto está {vivo.Conjunto.Status} na Meta agora, não ACTIVE: não se duplica o que não está rodando.");
         if (mudancasNaHora >= tetoVerba)
             return Nao(CodigoDaTrava.VerbaPorHora, $"esta conta já teve {mudancasNaHora} mudanças de verba na última hora (o teto é {tetoVerba}): a Meta bloqueia conta que mexe em orçamento em rajada. Fica para depois.");
@@ -134,6 +220,10 @@ public static class Travas
         var pedida = pedidaCentavos ?? vivo.Conjunto.DiarioCentavos;
         if (pedida is null) return new Trava(true, null, null, avisos, null);
         var copia = Math.Min(pedida.Value, folga.FolgaDiariaCentavos.Value);
+        /* a folga já passou do mínimo, então só a verba PEDIDA (ou a do original) pode estar abaixo dele */
+        if (copia < Limites.ConjuntoMinCentavos)
+            return Nao(CodigoDaTrava.CopiaAbaixoDoMinimo,
+                $"a verba da cópia ficaria em {Real(copia)}/dia, abaixo do mínimo de {Real(Limites.ConjuntoMinCentavos)}/dia (abaixo disso o pareado piora): não duplica. Rode o motor de novo para a recomendação trazer a verba da cópia.");
         if (copia < pedida) avisos.Add($"a verba da cópia desceu de {Real(pedida.Value)} para {Real(copia)}/dia: é a folga que o mês tem (D2).");
         return new Trava(true, null, null, avisos, copia);
     }
@@ -159,14 +249,25 @@ public static class Travas
 /// <summary>O dia da conta é o dia em Brasília (lib/trafego/fuso.ts): é por ele que a Meta conta gasto e leads.</summary>
 public static class Fuso
 {
-    public static readonly TimeZoneInfo DaConta = Achar();
+    public static readonly TimeZoneInfo DaConta = Achar(out CaiuNoLocal);
 
-    static TimeZoneInfo Achar()
+    /// <summary>`true` quando o host não tem o fuso de Brasília (contêiner sem tzdata) e o dia da conta caiu no fuso
+    /// LOCAL do host: quem usa o dia da conta deve avisar no log, porque num host em UTC o dia vira às 21h.</summary>
+    public static readonly bool CaiuNoLocal;
+
+    static TimeZoneInfo Achar(out bool caiuNoLocal)
     {
+        caiuNoLocal = false;
         foreach (var id in new[] { "America/Sao_Paulo", "E. South America Standard Time" })
             try { return TimeZoneInfo.FindSystemTimeZoneById(id); } catch { }
+        caiuNoLocal = true;
         return TimeZoneInfo.Local;
     }
+
+    /// <summary>A frase do log quando o fuso caiu no local, ou null quando o fuso é o de Brasília.</summary>
+    public static string? AvisoDoFuso() => CaiuNoLocal
+        ? $"o host não tem o fuso America/Sao_Paulo (tzdata): o dia da conta está saindo do fuso local ({TimeZoneInfo.Local.Id}), e o dia vira na hora errada."
+        : null;
 
     public static DateTime NaConta(DateTime instante)
     {

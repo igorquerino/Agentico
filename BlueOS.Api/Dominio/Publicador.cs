@@ -4,6 +4,7 @@ using System.Text.Json.Serialization;
 using BlueOS.Api.Infra;
 using BlueOS.Core.Api;
 using BlueOS.Core.Copy;
+using BlueOS.Core.Executor;
 using BlueOS.Core.Meta;
 using BlueOS.Core.Modelos;
 using BlueOS.Core.Motor;
@@ -61,7 +62,15 @@ public sealed class Publicador(Db db, MetaGraph graph, MetaMcp mcp, MetaEscrita 
     public async Task<ResultadoDoStart> PublicarAsync(Cliente c, PedidoDoStart p, Guid por)
     {
         var inicio = DateTime.UtcNow;
-        var r = await PublicarDeFatoAsync(c, p, por);
+        ResultadoDoStart r;
+        try { r = await PublicarDeFatoAsync(c, p, por); }
+        catch (Exception e)
+        {
+            /* a exceção que escapou (banco, quase sempre ANTES da escrita: a fase de escrita para pelo `Parou`) também
+               deixa a linha "criou_campanha" na trilha, e não sobe crua para a tela */
+            log.LogError("a publicação de {Slug} parou com erro interno: {Erro}", c.Slug, MetaGraph.Sanear(e.Message));
+            r = ResultadoDoStart.Falha("erro_interno", "um erro interno interrompeu a publicação. Confira no Gerenciador se algo foi criado antes de publicar de novo: publicar de novo a MESMA estrutura retoma de onde parou.");
+        }
         await registro.TrilhaAsync("criou_campanha", por, c.Slug, r.Ok ? "ok" : r.Simulado ? "ok" : "erro", r.Ok ? null : r.Motivo, "campanha",
             r.Ok ? r.CampanhaId : r.Parcial?.CampanhaId, null,
             r.Ok ? new { via = "automacao_start", rota = r.Via, conjuntos = r.Conjuntos.Count, anuncios = r.Anuncios.Count, ja_publicada = r.JaPublicada } : new { via = "automacao_start", rota = r.Via, codigo = r.Codigo, simulado = r.Simulado },
@@ -75,7 +84,9 @@ public sealed class Publicador(Db db, MetaGraph graph, MetaMcp mcp, MetaEscrita 
 
     async Task<ResultadoDoStart> PublicarDeFatoAsync(Cliente c, PedidoDoStart p, Guid por)
     {
-        var hoje = DateOnly.FromDateTime(DateTime.Now);
+        /* o dia da conta (Brasília), e não o do relógio do host: num host em UTC o dia virava às 21h */
+        if (Fuso.AvisoDoFuso() is { } avisoDoFuso) log.LogWarning("{Aviso}", avisoDoFuso);
+        var hoje = Fuso.DiaDaConta(DateTime.UtcNow);
         var slug = c.Slug;
         var parametros = ParametrosMotor.PadraoDoVault;
 
@@ -156,13 +167,15 @@ public sealed class Publicador(Db db, MetaGraph graph, MetaMcp mcp, MetaEscrita 
         var linkPedido = string.IsNullOrWhiteSpace(p.Link) ? null : p.Link.Trim();
         if (formularioId is null && (c.Regua is null || c.Regua.Perguntas.Count == 0))
             return ResultadoDoStart.Falha("sem_regua", "o cliente não tem régua de MQL: é dela que o formulário é criado. Preencha no card do cliente, ou escolha um formulário existente da página.");
+        if (formularioId is null && StartRegras.FaltaNaRegua(c.Regua!) is { } faltaNaRegua) return ResultadoDoStart.Falha(faltaNaRegua.Codigo, faltaNaRegua.Motivo);
         if (StartRegras.FaltaNoPedido(linkPedido, politicaUrl, formularioId) is { } falta) return ResultadoDoStart.Falha(falta.Codigo, falta.Motivo);
 
-        /* O formulário informado é conferido na Meta ANTES de qualquer escrita, com o token da página primeiro. Só
-           quando a escrita está liberada: fora disso nada é escrito de qualquer jeito. */
+        /* O formulário informado é conferido na Meta ANTES de qualquer escrita, com o token da página primeiro. É só
+           leitura (GET), então vale também no ensaio: sem ela o link caía na página do Facebook e o ensaio recusava
+           (`sem_link`) o que a produção aceitaria. */
         var escritaLiberada = meta.EscritaLiberada(cred);
         string? politicaDoFormulario = null;
-        if (formularioId is not null && escritaLiberada)
+        if (formularioId is not null)
         {
             var tokens = new List<string>();
             try { var pg = await graph.GetAsync($"{pageId}?fields=access_token", cred.Token); if (MetaGraph.S(pg, "access_token") is { } pt) tokens.Add(pt); } catch { }
@@ -203,8 +216,8 @@ public sealed class Publicador(Db db, MetaGraph graph, MetaMcp mcp, MetaEscrita 
             return ResultadoDoStart.Falha("sem_link", "o anúncio de cadastro precisa levar a um site externo, e não achei nenhum: o formulário escolhido não traz política de privacidade com URL. Escolha outro formulário, ou crie o formulário da régua e informe o endereço. Nada foi criado.");
 
         /* ---- 4. o hash e o registro ------------------------------------------------ */
-        var paraHash = conjuntos.Select((cj, i) => (cj.Nome, cj.Etapa.ToString(), cj.Publico, cj.DiarioCentavos, (string?)(string.Join("+", interessesDoConjunto[i].Select(x => x.Id)) is { Length: > 0 } s ? s : null))).ToList();
-        var hash = StartRegras.HashDaEstrutura(m.VaultSha, artes.Count > 0 ? string.Join(",", artes) : null, publicacoes.Count > 0 ? publicacoes[0].Linha.TextoHash : "sem-criativo", formularioId, paraHash);
+        var paraHash = StartRegras.ConjuntosParaHash(conjuntos, interessesDoConjunto);
+        var hash = StartRegras.HashDoPedido(m.VaultSha, artes, publicacoes.Count > 0 ? publicacoes[0].Linha.TextoHash : null, formularioId, paraHash);
         var existente = await AcharRegistroAsync(slug, hash);
         if (existente is { Estado: "parcial", CampanhaId: not null })
         {
@@ -220,6 +233,10 @@ public sealed class Publicador(Db db, MetaGraph graph, MetaMcp mcp, MetaEscrita 
         if (existente?.CampanhaId is null)
         {
             var pelaMetade = await PublicacaoPelaMetadeAsync(cred, slug, hash);
+            if (pelaMetade is { EmCurso: true } ec)
+                return ResultadoDoStart.Falha("em_andamento",
+                    $"este cliente tem outra publicação acontecendo agora (de outra estrutura{(ec.Linha.CampanhaId is not null ? $", campanha {ec.Linha.CampanhaId}" : "")}). Publicar esta junto criaria uma segunda campanha ao lado dela. Espere alguns minutos e confira no Gerenciador antes de publicar de novo.",
+                    hash, parcial: ec.Linha);
             if (pelaMetade is { } pm)
             {
                 var naMeta = pm.Meta.F == "nao_sei" ? $" Não consegui conferir na Meta se ela ainda existe ({pm.Meta.Motivo})." : $" Na Meta ela está {pm.Meta.Status}.";
@@ -347,9 +364,14 @@ public sealed class Publicador(Db db, MetaGraph graph, MetaMcp mcp, MetaEscrita 
                 var url = await db.UmAsync(Sql.Fmt($"select storage_url from public.designer_pecas where id = {Guid.Parse(pecaId)}"), x => x.S("storage_url"));
                 if (!string.IsNullOrWhiteSpace(url) && url.StartsWith("http", StringComparison.OrdinalIgnoreCase))
                 {
-                    var up = await mcp.ChamarAsync("ads_creative_upload_media", McpRegras.ArgsDaImagem(act, url, $"{nomeDaCampanha} — arte {pecaId[..8]}", comuns), token, 120);
-                    if (up.Ok) h = McpRegras.HashDaImagem(up.Dados);
-                    else log.LogWarning("o MCP não subiu a arte {Peca} ({Erro}); vai pela Graph", pecaId, up.Erro);
+                    /* a recusa E a exceção (401, rede) caem para a Graph: a subida da arte não cria nada na campanha */
+                    try
+                    {
+                        var up = await mcp.ChamarAsync("ads_creative_upload_media", McpRegras.ArgsDaImagem(act, url, $"{nomeDaCampanha} — arte {pecaId[..8]}", comuns), token, 120);
+                        if (up.Ok) h = McpRegras.HashDaImagem(up.Dados);
+                        else log.LogWarning("o MCP não subiu a arte {Peca} ({Erro}); vai pela Graph", pecaId, up.Erro);
+                    }
+                    catch (Exception e) { log.LogWarning("o MCP não respondeu à subida da arte {Peca} ({Erro}); vai pela Graph", pecaId, MetaGraph.Sanear(e.Message)); }
                 }
             }
             if (string.IsNullOrEmpty(h))
@@ -366,6 +388,7 @@ public sealed class Publicador(Db db, MetaGraph graph, MetaMcp mcp, MetaEscrita 
         if (!semCriativo)
             foreach (var pecaId in conjuntos.Select((_, i) => ArteDoConjunto(i)!).Distinct())
             {
+                await BaterAsync(reg);
                 try { var h = await HashDaArte(pecaId); if (reg.ImagemHash is null) { reg.ImagemHash = h; await GravarRegistroAsync(reg); } }
                 catch (Exception e) { return await Parou($"arte: {MetaGraph.Sanear(e.Message)}"); }
             }
@@ -546,11 +569,13 @@ public sealed class Publicador(Db db, MetaGraph graph, MetaMcp mcp, MetaEscrita 
         throw new ErroDaMeta($"{McpRegras.FraseDoMcp(r.Erro)} [MCP {ferramenta}{(r.Categoria is not null ? $", {r.Categoria}" : "")}]", classe == ClasseDoErro.Temporario ? 2 : classe == ClasseDoErro.Credencial ? 190 : 100);
     }
 
-    /// <summary>O id existe AO VIVO na conta? Um id de rascunho não existe para a Graph.</summary>
+    /// <summary>O id existe AO VIVO na conta? Um id de rascunho não existe para a Graph. Só a recusa que diz respeito ao
+    /// objeto (não existe, parâmetro) vale "não existe": limite de taxa e credencial LANÇAM, porque tratar um objeto vivo
+    /// como rascunho o mandaria de novo para a publicação do rascunho (e a espera da campanha vencia à toa).</summary>
     async Task<bool> ExisteAoVivoAsync(string id, string token)
     {
         try { var j = await graph.GetAsync($"{id}?fields=id", token, 15); return MetaGraph.S(j, "id") == id; }
-        catch (ErroDaMeta) { return false; }
+        catch (ErroDaMeta e) when (e.Classe is not (ClasseDoErro.Temporario or ClasseDoErro.Credencial)) { return false; }
     }
 
     /// <summary>Publica o rascunho do MCP: a campanha, os conjuntos e os anúncios que ainda não existem ao vivo, com
@@ -558,12 +583,15 @@ public sealed class Publicador(Db db, MetaGraph graph, MetaMcp mcp, MetaEscrita 
     async Task<string?> PublicarRascunhoAsync(string act, string token, RegistroDoStart reg, HashSet<string> rascunhos, Dictionary<string, object?> comuns)
     {
         if (reg.CampanhaId is null) return null;
+        await BaterAsync(reg);
         var ids = new List<string>();
         foreach (var id in new[] { reg.CampanhaId }.Concat(reg.Conjuntos.Select(x => x.AdsetId)).Concat(reg.Anuncios.Select(x => x.AdId)).Where(x => !string.IsNullOrEmpty(x)).Select(x => x!).Distinct())
             if (rascunhos.Contains(id) || !await ExisteAoVivoAsync(id, token)) ids.Add(id);
         if (ids.Count == 0) return null;
+        await BaterAsync(reg);
         var r = await McpAsync("ads_activate_entity", McpRegras.ArgsDeAtivacao(act, "campaign", reg.CampanhaId, ids, false, comuns), token);
         log.LogInformation("MCP publicou o rascunho de {Campanha}: {Resposta}", reg.CampanhaId, r.Dados.GetRawText().Length > 600 ? r.Dados.GetRawText()[..600] : r.Dados.GetRawText());
+        await BaterAsync(reg);
         for (var i = 0; i < 10; i++)
         {
             if (await ExisteAoVivoAsync(reg.CampanhaId, token)) return $"publicado pelo MCP oficial da Meta: {ids.Count} objeto(s) saíram do rascunho e estão PAUSADOS na conta.";
@@ -693,11 +721,17 @@ public sealed class Publicador(Db db, MetaGraph graph, MetaMcp mcp, MetaEscrita 
     async Task<RegistroDoStart?> RegistroDaVezAsync(RegistroDoStart? existente, string slug, string hash, string vaultSha, Guid por)
     {
         if (existente is null) return await AbrirRegistroAsync(slug, hash, vaultSha, por);
-        var emCurso = existente.Estado == "criando" && DateTime.TryParse(existente.AtualizadoEm, System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.AdjustToUniversal | System.Globalization.DateTimeStyles.AssumeUniversal, out var em)
-            && DateTime.UtcNow - em < StartRegras.PrazoDaPublicacao;
-        if (emCurso || !await TomarRegistroAsync(existente)) return null;
+        if (StartRegras.EmCurso(existente, DateTime.UtcNow) || !await TomarRegistroAsync(existente)) return null;
         existente.Estado = "criando";
         return existente;
+    }
+
+    /// <summary>O batimento da publicação em voo: renova o `atualizado_em` da linha 'criando' nos passos longos (a subida da
+    /// arte, o rascunho do MCP), para a trava de 6 minutos não vencer com o processo ainda trabalhando. Nunca lança.</summary>
+    async Task BaterAsync(RegistroDoStart r)
+    {
+        try { await db.ExecutarAsync(Sql.Fmt($"update public.trafego_start_publicacao set atualizado_em = now() where id = {Guid.Parse(r.Id)} and estado = 'criando'")); }
+        catch (Exception e) { log.LogWarning("o batimento do registro {Id} não gravou: {Erro}", r.Id, e.Message); }
     }
 
     async Task GravarRegistroAsync(RegistroDoStart r)
@@ -739,17 +773,23 @@ public sealed class Publicador(Db db, MetaGraph graph, MetaMcp mcp, MetaEscrita 
         catch (Exception e) { return new("nao_sei", null, MetaGraph.Sanear(e.Message)); }
     }
 
-    /// <summary>A publicação deste cliente que ficou pela metade, de OUTRA estrutura: recusada, a menos que a campanha dela
-    /// esteja arquivada ou apagada na Meta (aí encerra e segue).</summary>
-    async Task<(RegistroDoStart Linha, SituacaoDaCampanha Meta)?> PublicacaoPelaMetadeAsync(Credenciais cred, string slug, string hash)
+    /// <summary>A publicação deste cliente, de OUTRA estrutura, que barra a nova (StartRegras.SituacaoDeOutra): em curso
+    /// agora ('criando' recente), ou pela metade ('parcial', ou 'criando' parado com campanha). A pela metade é recusada, a
+    /// menos que a campanha dela esteja arquivada ou apagada na Meta (aí encerra e segue).</summary>
+    async Task<(RegistroDoStart Linha, SituacaoDaCampanha Meta, bool EmCurso)?> PublicacaoPelaMetadeAsync(Credenciais cred, string slug, string hash)
     {
-        var linhas = await db.ListaAsync("select " + Colunas + " from public.trafego_start_publicacao" + Sql.Fmt($" where cliente_slug = {slug} and estado = 'parcial' order by atualizado_em desc limit 20"), LerRegistro);
+        var linhas = await db.ListaAsync("select " + Colunas + " from public.trafego_start_publicacao" + Sql.Fmt($" where cliente_slug = {slug} and estado in ('parcial', 'criando') order by atualizado_em desc limit 20"), LerRegistro);
         foreach (var l in linhas)
         {
-            if (l.EstruturaHash == hash || l.CampanhaId is null) continue;
-            var sit = await SituacaoDaCampanhaAsync(cred, l.CampanhaId);
-            if (sit.F == "encerrada" && await EncerrarRegistroAsync(l, sit.Status ?? "")) continue;
-            return (l, sit);
+            switch (StartRegras.SituacaoDeOutra(l, hash, DateTime.UtcNow))
+            {
+                case StartRegras.OutraPublicacao.EmCurso:
+                    return (l, new SituacaoDaCampanha("nao_sei", null, "a publicação está em curso agora"), true);
+                case StartRegras.OutraPublicacao.PelaMetade:
+                    var sit = await SituacaoDaCampanhaAsync(cred, l.CampanhaId!);
+                    if (sit.F == "encerrada" && await EncerrarRegistroAsync(l, sit.Status ?? "")) continue;
+                    return (l, sit, false);
+            }
         }
         return null;
     }

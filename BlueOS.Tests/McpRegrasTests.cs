@@ -192,7 +192,7 @@ public class McpRegrasTests
         Assert.Contains("Unknown tool", McpRegras.Ler(rpc).Erro);
 
         Assert.Equal(ClasseDoErro.Temporario, McpRegras.ClasseDoErroDoMcp("TRANSIENT", true, "try again"));
-        Assert.Equal(ClasseDoErro.Credencial, McpRegras.ClasseDoErroDoMcp("PERMISSION", false, "no access"));
+        Assert.Equal(ClasseDoErro.Permanente, McpRegras.ClasseDoErroDoMcp("PERMISSION", false, "no access"));
         Assert.Equal(ClasseDoErro.Temporario, McpRegras.ClasseDoErroDoMcp(null, false, "User request limit reached: too many calls"));
     }
 

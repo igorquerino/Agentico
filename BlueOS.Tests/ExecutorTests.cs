@@ -41,7 +41,7 @@ public class ExecutorTests
     public void Duplicar_exige_o_conjunto_ACTIVE_lido_na_hora()
     {
         Assert.Equal(CodigoDaTrava.ConjuntoNaoLido, Travas.TravasDeDinheiro(TipoNaMeta.DuplicateAdset, 3000, ComFolga(10_000), 0, 0, Vivo(null, null, 1, "sem resposta"), null).Codigo);
-        Assert.Equal(CodigoDaTrava.ConjuntoNaoLido, Travas.TravasDeDinheiro(TipoNaMeta.DuplicateAdset, 3000, ComFolga(10_000), 0, 0, Vivo("PAUSED"), null).Codigo);
+        Assert.Equal(CodigoDaTrava.ConjuntoNaoAtivo, Travas.TravasDeDinheiro(TipoNaMeta.DuplicateAdset, 3000, ComFolga(10_000), 0, 0, Vivo("PAUSED"), null).Codigo);
         Assert.Equal(CodigoDaTrava.ConjuntoComProblema, Travas.TravasDeDinheiro(TipoNaMeta.DuplicateAdset, 3000, ComFolga(10_000), 0, 0, Vivo("WITH_ISSUES"), null).Codigo);
     }
 

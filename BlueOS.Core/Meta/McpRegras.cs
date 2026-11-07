@@ -192,7 +192,8 @@ public static class McpRegras
 
     /* ---- as ações do executor no MCP ------------------------------------------------ */
 
-    /// <summary>O tipo de entidade do MCP a partir do tipo da ação da Graph (`pause_adset` → `ad_set`).</summary>
+    /// <summary>O tipo de entidade do MCP a partir do tipo da ação da Graph (`pause_adset` → `ad_set`; `ativar_copia_ad`,
+    /// o anúncio da cópia, → `ad`; `ativar_copia`, o conjunto da cópia, → `ad_set`).</summary>
     public static string TipoDaEntidade(string tipoGraph) =>
         tipoGraph.EndsWith("_campaign") ? "campaign" : tipoGraph.EndsWith("_ad") ? "ad" : "ad_set";
 
@@ -205,7 +206,7 @@ public static class McpRegras
         {
             case "pause_campaign": case "pause_adset": case "pause_ad":
                 return ("ads_update_entity", entidade, new() { ["status"] = "PAUSED" });
-            case "resume_campaign": case "resume_adset": case "resume_ad": case "ativar_copia":
+            case "resume_campaign": case "resume_adset": case "resume_ad": case "ativar_copia": case "ativar_copia_ad":
                 return ("ads_activate_entity", entidade, new());
             case "set_daily_budget":
             {
@@ -222,6 +223,45 @@ public static class McpRegras
     }
 
     /* ---- a resposta ------------------------------------------------------------------ */
+
+    /// <summary>Quantas páginas de 100 contas a listagem do token lê antes de desistir (20 mil contas).</summary>
+    public const int MaxPaginasDeContas = 200;
+
+    /// <summary>O envelope da resposta HTTP: JSON puro ou SSE. No SSE os eventos se separam por linha em branco e o `data:`
+    /// de um evento pode vir em VÁRIAS linhas, que se juntam com quebra de linha (a especificação do SSE); vale o último
+    /// evento que seja um objeto JSON. Um evento cujas linhas não parseiam juntas é lido linha a linha (o servidor que
+    /// manda um JSON por linha). Null quando o SSE não traz JSON-RPC nenhum; JSON puro ilegível lança (JsonException).</summary>
+    public static JsonElement? Envelope(string? texto)
+    {
+        var t = (texto ?? "").Trim();
+        if (t.StartsWith('{')) return JsonDocument.Parse(t).RootElement.Clone();
+        JsonElement? ultimo = null;
+        var linhasDoEvento = new List<string>();
+        void Fechar()
+        {
+            if (linhasDoEvento.Count == 0) return;
+            if (Objeto(string.Join("\n", linhasDoEvento)) is { } junto) ultimo = junto;
+            else foreach (var l in linhasDoEvento) if (Objeto(l) is { } so) ultimo = so;
+            linhasDoEvento.Clear();
+        }
+        foreach (var bruta in t.Split('\n'))
+        {
+            var linha = bruta.TrimEnd('\r').TrimStart();
+            if (linha.Trim() == "") { Fechar(); continue; }
+            if (!linha.StartsWith("data:", StringComparison.Ordinal)) continue;
+            var valor = linha[5..];
+            linhasDoEvento.Add(valor.StartsWith(' ') ? valor[1..] : valor);
+        }
+        Fechar();
+        return ultimo;
+    }
+
+    static JsonElement? Objeto(string json)
+    {
+        var j = json.Trim();
+        if (!j.StartsWith('{')) return null;
+        try { return JsonDocument.Parse(j).RootElement.Clone(); } catch { return null; }
+    }
 
     public static string? S(JsonElement o, string n) => o.ValueKind == JsonValueKind.Object && o.TryGetProperty(n, out var v)
         ? v.ValueKind == JsonValueKind.String ? v.GetString() : v.ValueKind == JsonValueKind.Null ? null : v.GetRawText() : null;
@@ -269,11 +309,14 @@ public static class McpRegras
         return null;
     }
 
-    /// <summary>A classe do erro do MCP, pela categoria que ele declara; sem categoria, pela frase (as mesmas da Graph).</summary>
+    /// <summary>A classe do erro do MCP, pela categoria que ele declara; sem categoria, pela frase (as mesmas da Graph).
+    /// Credencial é só o token (AUTH, TOKEN): falta de PERMISSÃO numa ação é do objeto ou da conta, como os códigos 10 e
+    /// 200 da Graph, e repetir não conserta (Permanente), em vez do sino "token vencido, reconecte".</summary>
     public static ClasseDoErro ClasseDoErroDoMcp(string? categoria, bool repetivel, string? frase)
     {
         var cat = (categoria ?? "").ToUpperInvariant();
-        if (cat.Contains("AUTH") || cat.Contains("PERMISSION") || cat.Contains("TOKEN")) return ClasseDoErro.Credencial;
+        if (cat.Contains("PERMISSION")) return ClasseDoErro.Permanente;
+        if (cat.Contains("AUTH") || cat.Contains("TOKEN")) return ClasseDoErro.Credencial;
         if (repetivel || cat.Contains("TRANSIENT") || cat.Contains("RATE") || cat.Contains("THROTTL")) return ClasseDoErro.Temporario;
         if (cat.Contains("VALIDATION") || cat.Contains("NOT_FOUND") || cat.Contains("INVALID")) return ClasseDoErro.Permanente;
         if (EhLancamentoGradual(frase)) return ClasseDoErro.Permanente;

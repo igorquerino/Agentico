@@ -140,15 +140,28 @@ public static class StartRegras
         };
         foreach (var p in regua.Perguntas)
         {
-            var opcoes = p.Forte.Concat(p.Media).Concat(p.Elim).Select(v => v.Trim()).Where(v => v != "").Distinct().ToList();
+            var opcoes = OpcoesDaPergunta(p);
             saida.Add(new Dictionary<string, object>
             {
                 ["type"] = "CUSTOM", ["key"] = p.Nome,
-                ["label"] = string.IsNullOrWhiteSpace(p.Rotulo) ? p.Nome : p.Rotulo.Trim(),
+                ["label"] = RotuloDaPergunta(p),
                 ["options"] = opcoes.Select(v => new Dictionary<string, string> { ["key"] = v, ["value"] = v }).ToList(),
             });
         }
         return saida;
+    }
+
+    static List<string> OpcoesDaPergunta(PerguntaDaRegua p) => p.Forte.Concat(p.Media).Concat(p.Elim).Select(v => v.Trim()).Where(v => v != "").Distinct().ToList();
+    static string RotuloDaPergunta(PerguntaDaRegua p) => string.IsNullOrWhiteSpace(p.Rotulo) ? p.Nome : p.Rotulo.Trim();
+
+    /// <summary>O que impede criar o formulário da régua, ANTES de qualquer escrita: pergunta sem nenhuma opção. Ela vira
+    /// múltipla escolha vazia, que a Meta recusa; recusar aqui dá a frase certa e nada é tentado na Meta.</summary>
+    public static (string Codigo, string Motivo)? FaltaNaRegua(ReguaV2 regua)
+    {
+        foreach (var p in regua.Perguntas)
+            if (OpcoesDaPergunta(p).Count == 0)
+                return ("regua_sem_opcoes", $"a pergunta \"{RotuloDaPergunta(p)}\" da régua não tem nenhuma resposta (forte, média ou eliminatória): o formulário de cadastro não sobe com pergunta sem opções. Complete a régua no card do cliente, ou escolha um formulário existente da página. Nada foi criado.");
+        return null;
     }
 
     public static string NomeDoFormulario(DateOnly quando) => $"[\U0001F30A Blue] [FORM-L] {quando.Day:00}/{quando.Month:00} | régua v2";
@@ -242,6 +255,42 @@ public static class StartRegras
             : new object[] { c.Nome, c.Etapa, c.Publico, c.DiarioCentavos, c.Interesses }).ToList();
         var json = Json(new object?[] { vaultSha, designerPecaId, textoHash, formularioId, lista });
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(json))).ToLowerInvariant();
+    }
+
+    /// <summary>Os conjuntos como entram no hash: nome, etapa, público, diária e os ids dos interesses juntados por "+"
+    /// (null sem interesse). O nome do conjunto entra porque é a chave da retomada.</summary>
+    public static List<(string Nome, string Etapa, string Publico, long DiarioCentavos, string? Interesses)> ConjuntosParaHash(
+        IReadOnlyList<ConjuntoProposto> conjuntos, IReadOnlyList<IReadOnlyList<InteresseDaMeta>> interesses) =>
+        conjuntos.Select((cj, i) => (cj.Nome, cj.Etapa.ToString(), cj.Publico, cj.DiarioCentavos,
+            (string?)(i < interesses.Count && string.Join("+", interesses[i].Select(x => x.Id)) is { Length: > 0 } s ? s : null))).ToList();
+
+    /// <summary>O hash do PEDIDO como o Publicar o compõe, num lugar só: as artes na ordem, separadas por vírgula (null sem
+    /// arte); o hash do texto do PRIMEIRO anúncio ("sem-criativo" sem anúncio); o formulário escolhido; e os conjuntos. É a
+    /// chave da retomada: mudar a composição faz a linha 'ok' sumir e a mesma estrutura subir de novo.</summary>
+    public static string HashDoPedido(string vaultSha, IReadOnlyList<string> artes, string? textoHashDoPrimeiro, string? formularioId,
+        IReadOnlyList<(string Nome, string Etapa, string Publico, long DiarioCentavos, string? Interesses)> conjuntos) =>
+        HashDaEstrutura(vaultSha, artes.Count > 0 ? string.Join(",", artes) : null, textoHashDoPrimeiro ?? "sem-criativo", formularioId, conjuntos);
+
+    /* ---- a trava da publicação em voo ---------------------------------------- */
+
+    public enum OutraPublicacao { Ignora, EmCurso, PelaMetade }
+
+    static DateTime? Carimbo(string texto) =>
+        DateTime.TryParse(texto, System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.AdjustToUniversal | System.Globalization.DateTimeStyles.AssumeUniversal, out var em) ? em : null;
+
+    /// <summary>O registro está sendo trabalhado agora: 'criando' com o último batimento (`atualizado_em`) dentro do prazo.</summary>
+    public static bool EmCurso(RegistroDoStart r, DateTime agoraUtc) =>
+        r.Estado == "criando" && Carimbo(r.AtualizadoEm) is { } em && agoraUtc - em < PrazoDaPublicacao;
+
+    /// <summary>Uma publicação de OUTRA estrutura do mesmo cliente barra a nova? 'criando' recente: alguém publica agora.
+    /// 'parcial', ou 'criando' parado (o app fechou no meio) com campanha: ficou pela metade, e publicar outra estrutura
+    /// criaria a segunda campanha ao lado dela. O resto não barra.</summary>
+    public static OutraPublicacao SituacaoDeOutra(RegistroDoStart r, string hash, DateTime agoraUtc)
+    {
+        if (r.EstruturaHash == hash) return OutraPublicacao.Ignora;
+        if (EmCurso(r, agoraUtc)) return OutraPublicacao.EmCurso;
+        if (r.Estado is "parcial" or "criando" && r.CampanhaId is not null) return OutraPublicacao.PelaMetade;
+        return OutraPublicacao.Ignora;
     }
 
     public static string LinkDoGerenciador(string act, string campanhaId) =>

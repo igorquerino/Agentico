@@ -55,14 +55,16 @@ public sealed class MetaEscrita(Db db, MetaGraph graph, MetaMcp mcp, ILogger<Met
 
     /* ---- a credencial do cliente ---------------------------------------------- */
 
-    /// <summary>trafego_contas (a conta) + trafego_integracoes (o token do squad). Sem token no squad do cliente, os
-    /// outros squads do cliente no V1; nunca o OS antigo. AS FRASES DE ERRO SÃO CONTRATO: "sem conta" e "sem token".</summary>
+    /// <summary>trafego_contas (a conta) + trafego_integracoes (o token do squad). Os outros squads do cliente no V1 só
+    /// quando a conta NÃO tem squad (meta-activity.ts): com o squad conhecido e sem token, é "sem token", e nunca o
+    /// token de outro squad, que a rota (MCP e liberação de escrita) não acompanharia. Nunca o OS antigo. AS FRASES DE
+    /// ERRO SÃO CONTRATO: "sem conta" e "sem token".</summary>
     public async Task<(Credenciais? Cred, string? Erro)> CredenciaisDoClienteAsync(string slug)
     {
         if (CredCache.TryGetValue(slug, out var g) && DateTime.UtcNow - g.Em < TimeSpan.FromMinutes(5)) return (g.Cred, null);
         var l = await db.UmAsync(Sql.Fmt($"""
             select tc.ad_account_id, tc.squad_nome,
-                   (select i.meta_access_token from public.trafego_integracoes i where upper(trim(i.squad_nome)) = upper(trim(coalesce(tc.squad_nome, ''))) and coalesce(i.meta_access_token, '') <> '' limit 1) as token,
+                   (select i.meta_access_token from public.trafego_integracoes i where upper(trim(i.squad_nome)) = upper(trim(coalesce(tc.squad_nome, ''))) and coalesce(i.meta_access_token, '') <> '' order by i.atualizado_em desc limit 1) as token,
                    (select i.meta_access_token from public.cliente_squads cs join public.squads s on s.squad_id = cs.squad_id
                       join public.trafego_integracoes i on upper(trim(i.squad_nome)) = upper(trim(s.squad_nome))
                       join public.clientes c on c.cliente_id = cs.cliente_id
@@ -72,7 +74,7 @@ public sealed class MetaEscrita(Db db, MetaGraph graph, MetaMcp mcp, ILogger<Met
             """), r => new { Act = r.S("ad_account_id"), Squad = r.S("squad_nome"), Token = r.S("token"), TokenDosSquads = r.S("token_dos_squads") });
         if (l is null || string.IsNullOrWhiteSpace(l.Act))
             return (null, "sem conta de anúncio: este cliente não tem ad_account_id cadastrado (nem no V1, nem no OS antigo). Vincule a conta no Setup pra ver as campanhas.");
-        var token = l.Token ?? l.TokenDosSquads;
+        var token = string.IsNullOrWhiteSpace(l.Squad) ? l.Token ?? l.TokenDosSquads : l.Token;
         if (string.IsNullOrWhiteSpace(token))
             return (null, $"sem token Meta: a conta de anúncio existe, mas o squad{(l.Squad is not null ? $" {l.Squad}" : "")} não tem token gravado. Cole o token no Setup.");
         var cred = new Credenciais(token, GraphRegras.ComAct(l.Act.Trim()), l.Squad, mcp.SquadPeloMcp(l.Squad) ? "mcp" : "graph");
@@ -176,30 +178,34 @@ public sealed class MetaEscrita(Db db, MetaGraph graph, MetaMcp mcp, ILogger<Met
 
     /* ---- a escrita, pela única porta de baixo --------------------------------- */
 
-    async Task<long?> OrcamentoAtualAsync(string id, string token)
+    /// <summary>As verbas atuais do objeto, como a Graph as devolve (texto). `Lido = false` quando a leitura falhou.</summary>
+    async Task<(bool Lido, string? Diaria, string? Vitalicia)> OrcamentoAtualAsync(string id, string token)
     {
         try
         {
             var j = await graph.GetAsync($"{id}?fields=daily_budget,lifetime_budget", token, 15);
-            var v = long.TryParse(MetaGraph.S(j, "daily_budget") ?? MetaGraph.S(j, "lifetime_budget") ?? "0", out var n) ? n : 0;
-            return v > 0 ? v : null;
+            return (true, MetaGraph.S(j, "daily_budget"), MetaGraph.S(j, "lifetime_budget"));
         }
-        catch { return null; }
+        catch { return (false, null, null); }
     }
+
+    /// <summary>A Meta não respondeu ANTES do POST valendo: nada foi enviado, então é recusa limpa e temporária
+    /// (a reserva reabre), e não "pode ter acontecido".</summary>
+    static ResultadoMeta SemRespostaAntesDaEscrita(string onde, Exception e, string via = "graph") =>
+        ResultadoMeta.Falha($"a Meta não respondeu {onde} ({MetaGraph.Sanear(e.Message)}): nada foi enviado valendo. Tente de novo em instantes.", false, ClasseDoErro.Temporario, 60_000, via: via);
 
     public async Task<ResultadoMeta> AplicarNaMetaAsync(Credenciais cred, string tipo, string? alvo, IReadOnlyDictionary<string, object?> parametros)
     {
-        /* ---- ANTI-BAN: salto de verba acima de 5× não passa, em qualquer campo de orçamento ---- */
-        var novo = GraphRegras.OrcamentoPedido(parametros);
-        if (novo is not null && !string.IsNullOrEmpty(alvo))
+        /* ---- ANTI-BAN: salto de verba acima de 5× não passa, em qualquer campo de orçamento (GraphRegras.SaltoDeVerba) ---- */
+        if (GraphRegras.OrcamentoPedido(parametros) is not null && !string.IsNullOrEmpty(alvo))
         {
-            var atual = await OrcamentoAtualAsync(alvo, cred.Token);
-            if (atual is null)
-                return ResultadoMeta.Falha("não consegui ler a verba atual do conjunto na Meta: mudar verba sem saber de onde é risco de bloqueio da conta. Nada foi alterado; tente de novo em instantes.", false, ClasseDoErro.Temporario, 60_000);
-            if (novo > atual * 5)
+            var (lido, diaria, vitalicia) = await OrcamentoAtualAsync(alvo, cred.Token);
+            var (veredito, frase) = GraphRegras.SaltoDeVerba(parametros, lido, diaria, vitalicia);
+            switch (veredito)
             {
-                var pct = ((double)novo.Value / atual.Value * 100 - 100).ToString("0", System.Globalization.CultureInfo.InvariantCulture);
-                return ResultadoMeta.Falha($"aumento de verba grande demais num passo só (+{pct}%) — risco de bloqueio da conta. Suba em incrementos de até 5x.", false);
+                case GraphRegras.VereditoDaVerba.SemLeitura: return ResultadoMeta.Falha(frase!, false, ClasseDoErro.Temporario, 60_000);
+                case GraphRegras.VereditoDaVerba.SemVerbaDoMesmoTipo: return ResultadoMeta.Falha(frase!, false, ClasseDoErro.Permanente);
+                case GraphRegras.VereditoDaVerba.SaltoGrande: return ResultadoMeta.Falha(frase!, false);
             }
         }
 
@@ -213,6 +219,7 @@ public sealed class MetaEscrita(Db db, MetaGraph graph, MetaMcp mcp, ILogger<Met
         {
             try { await graph.PostAsync(caminho, corpo, cred.Token, validarSo: true, segundos: 30); }
             catch (ErroDaMeta e) { return Falha(e, false, 0); }
+            catch (Exception e) { return SemRespostaAntesDaEscrita("ao ensaio", e); }
         }
 
         /* ---- 1b. fora da produção, para aqui (AD-MT-20) ------------------------- */
@@ -227,10 +234,14 @@ public sealed class MetaEscrita(Db db, MetaGraph graph, MetaMcp mcp, ILogger<Met
         if (noMcp is { } m)
         {
             var conversa = McpRegras.NovaConversa();
+            /* a conta no MCP é LEITURA: falhar nela (rede, lista de contas) é antes de qualquer escrita */
+            bool serve; string motivo;
+            try { (serve, motivo, _) = await ContaServeNoMcpAsync(cred, conversa); }
+            catch (ErroDaMeta e) { return Falha(e, false, 0) with { Via = "mcp" }; }
+            catch (Exception e) { return SemRespostaAntesDaEscrita("ao conferir a conta no MCP", e, "mcp"); }
+            if (!serve) return ResultadoMeta.Falha(motivo, false, ClasseDoErro.Permanente, via: "mcp");
             try
             {
-                var (serve, motivo, _) = await ContaServeNoMcpAsync(cred, conversa);
-                if (!serve) return ResultadoMeta.Falha(motivo, false, ClasseDoErro.Permanente, via: "mcp");
                 var comuns = McpRegras.Comuns(conversa, McpRegras.Atualizacao, $"{tipo} no objeto {alvo} da conta {GraphRegras.SemAct(cred.Act)}, a pedido do gestor");
                 var args = m.Ferramenta == "ads_activate_entity"
                     ? McpRegras.ArgsDeAtivacao(cred.Act, m.TipoDaEntidade, alvo ?? "", null, false, comuns)
