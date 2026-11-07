@@ -659,10 +659,13 @@ public sealed class V1Api : IBlueApi, IDisposable
 
     public async Task<Recomendacao> DecidirAsync(Cliente c, string recomendacaoId, bool aceita, string? motivo)
     {
-        await Envie(HttpMethod.Post, "api/trafego/motor/decisao", new { recomendacao_id = recomendacaoId, decisao = aceita ? "aceita" : "negada", motivo });
+        var antes = c.Recomendacoes.FirstOrDefault(r => r.Id == recomendacaoId);
+        var j = await Envie(HttpMethod.Post, "api/trafego/motor/decisao", new { recomendacao_id = recomendacaoId, decisao = aceita ? "aceita" : "negada", motivo });
         var recs = await ListarRecomendacoesAsync(c);
         Avisar();
-        return recs.First(r => r.Id == recomendacaoId);
+        /* a escrita já aconteceu: se a decidida não voltou na lista, devolve a que a tela tinha, sem lançar */
+        return recs.FirstOrDefault(r => r.Id == recomendacaoId)
+            ?? RecomendacaoForaDaLista.Montar(antes, recomendacaoId, c.Slug, RecomendacaoForaDaLista.EstadoDe(S(j, "decisao"), aceita));
     }
 
     public async Task MudarModoAsync(Cliente c, ModoDeExecucao modo)

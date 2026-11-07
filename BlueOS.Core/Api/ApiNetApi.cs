@@ -7,6 +7,8 @@ using BlueOS.Core.Modelos;
 using BlueOS.Core.Motor;
 using BlueOS.Core.Publicar;
 
+[assembly: System.Runtime.CompilerServices.InternalsVisibleTo("BlueOS.Tests")]
+
 namespace BlueOS.Core.Api;
 
 /* ============================================================================
@@ -37,13 +39,18 @@ public sealed class ApiNetApi : IBlueApi, IDisposable
     public event Action? Mudou;
     void Avisar() => Mudou?.Invoke();
 
-    public ApiNetApi(string baseUrl, V1Api? v1)
+    public ApiNetApi(string baseUrl, V1Api? v1) : this(baseUrl, v1, null) { }
+
+    /// <summary>Com `handler`, as duas conexões passam por ele (os testes respondem no lugar da API, sem rede).</summary>
+    internal ApiNetApi(string baseUrl, V1Api? v1, HttpMessageHandler? handler)
     {
         BaseUrl = baseUrl.TrimEnd('/');
         _v1 = v1;
-        _http = new HttpClient { BaseAddress = new Uri(BaseUrl + "/"), Timeout = TimeSpan.FromSeconds(60) };
+        _http = handler is null ? new HttpClient() : new HttpClient(handler, disposeHandler: false);
+        _http.BaseAddress = new Uri(BaseUrl + "/"); _http.Timeout = TimeSpan.FromSeconds(60);
         _http.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
-        _lento = new HttpClient { BaseAddress = new Uri(BaseUrl + "/"), Timeout = TimeSpan.FromMinutes(5) };
+        _lento = handler is null ? new HttpClient() : new HttpClient(handler, disposeHandler: false);
+        _lento.BaseAddress = new Uri(BaseUrl + "/"); _lento.Timeout = TimeSpan.FromMinutes(5);
         if (v1 is not null) v1.Mudou += Avisar;
     }
 
@@ -93,29 +100,54 @@ public sealed class ApiNetApi : IBlueApi, IDisposable
         HttpResponseMessage r;
         try { r = await _http.SendAsync(req); }
         catch (HttpRequestException e) { throw new InvalidOperationException($"não consegui falar com a API em {BaseUrl}: {e.Message}"); }
+        /* nenhum chamador passa token: o cancelamento aqui é o timeout de 60 s, e a escrita pode ter sido gravada */
+        catch (OperationCanceledException) { throw new InvalidOperationException($"a API não respondeu em 60 s ({rota}): a mudança pode ter sido gravada ou não. Releia o cliente antes de repetir."); }
         var j = await LerJson(r);
         if (!r.IsSuccessStatusCode) throw new InvalidOperationException(Erro(j, $"a API respondeu {(int)r.StatusCode} em {rota}"));
         return j;
     }
+
+    /// <summary>A escrita que mexe na Meta não teve resposta (timeout de 5 min): a API pode já ter escrito.</summary>
+    static InvalidOperationException EstadoIncerto(string oQue, string conferir) =>
+        new($"a API não respondeu em 5 minutos ao {oQue}: o estado na Meta é INCERTO (pode ter sido feito, inteiro ou pela metade). Confira {conferir} no Gerenciador antes de repetir.");
 
     /* ---- leituras: um round-trip cada ------------------------------------------ */
 
     public async Task<IReadOnlyList<Cliente>> ListarClientesAsync()
     {
         var lista = await Get<List<Cliente>>("api/carteira");
-        _cache.Clear();
-        foreach (var c in lista) _cache[c.Slug] = c;
+        /* Mescla, não limpa: o MainLayout relê a carteira a cada 60 s e a cada escrita, e limpar o cache apagava o
+           piloto que o gestor escolheu (o Condutor então escolhia outra arte sozinho). */
+        foreach (var c in lista) Guardar(c);
         return lista;
     }
 
     public async Task<Cliente?> ObterClienteAsync(string slug)
     {
         var c = await Get<Cliente>($"api/clientes/{Uri.EscapeDataString(slug)}");
-        /* O que é local ao desktop (piloto, conjuntos lidos no ongoing) sobrevive à releitura; os lotes de copy
-           agora vêm da API (copy_lote), então a releitura é a verdade. */
-        if (_cache.TryGetValue(slug, out var antigo)) { c.Pilotos = antigo.Pilotos; c.Conjuntos = antigo.Conjuntos; }
-        _cache[slug] = c;
+        /* Os lotes de copy vêm da API (copy_lote), então a releitura é a verdade; o que é local herda da anterior. */
+        Guardar(c);
         return c;
+    }
+
+    /// <summary>Artes que o gestor reprovou nesta sessão: a carteira da API marca toda arte como aprovada.</summary>
+    readonly HashSet<string> _artesReprovadas = new();
+
+    /// <summary>Guarda a instância relida, herdando da anterior o que só existe no desktop (a API ainda não grava):
+    /// os pilotos, os conjuntos lidos no ongoing, os campos da conta digitados em Assets (política, link, formulário,
+    /// lista, site) e a reprovação local de arte. É paliativo de SESSÃO: não sobrevive a um reinício do app.
+    /// O Start em curso (o condutor) também é reaplicado, para o card não oferecer um segundo Start.</summary>
+    void Guardar(Cliente c)
+    {
+        if (_cache.TryGetValue(c.Slug, out var antigo) && !ReferenceEquals(antigo, c))
+        {
+            c.Pilotos = antigo.Pilotos; c.Conjuntos = antigo.Conjuntos;
+            c.Conta.PoliticaUrl ??= antigo.Conta.PoliticaUrl; c.Conta.Link ??= antigo.Conta.Link; c.Conta.FormularioId ??= antigo.Conta.FormularioId;
+            c.Conta.TemLista |= antigo.Conta.TemLista; c.Conta.TemSiteOuTag |= antigo.Conta.TemSiteOuTag;
+        }
+        foreach (var a in c.Artes) if (_artesReprovadas.Contains(a.Id)) a.Aprovada = false;
+        Fluxo.Condutor.ReaplicarEstado(c);
+        _cache[c.Slug] = c;
     }
 
     public async Task<Ongoing> LerOngoingAsync(Cliente c)
@@ -199,17 +231,26 @@ public sealed class ApiNetApi : IBlueApi, IDisposable
     public async Task<Recomendacao> DecidirAsync(Cliente c, string recomendacaoId, bool aceita, string? motivo)
     {
         var req = new HttpRequestMessage(HttpMethod.Post, $"api/clientes/{Uri.EscapeDataString(c.Slug)}/recomendacoes/{recomendacaoId}/decisao") { Content = JsonContent.Create(new { aceita, motivo }, options: Json) };
+        var antes = c.Recomendacoes.FirstOrDefault(x => x.Id == recomendacaoId);
         HttpResponseMessage r;
         try { r = await _lento.SendAsync(req); }
         catch (HttpRequestException e) { throw new InvalidOperationException($"não consegui falar com a API em {BaseUrl}: {e.Message}"); }
+        catch (OperationCanceledException) when (aceita) { throw EstadoIncerto("aplicar a decisão", "o conjunto"); }
+        catch (OperationCanceledException) { throw new InvalidOperationException("a API não respondeu em 5 minutos ao negar: releia as recomendações antes de repetir."); }
         var j = await LerJson(r);
         if (!r.IsSuccessStatusCode)
             throw new InvalidOperationException(Erro(j, j.ValueKind == JsonValueKind.Object && j.TryGetProperty("erro", out var e1) && e1.ValueKind == JsonValueKind.String ? e1.GetString()! : $"a API respondeu {(int)r.StatusCode}"));
         var lista = await ListarRecomendacoesAsync(c);
-        var rec = lista.First(x => x.Id == recomendacaoId);
         var avisos = j.ValueKind == JsonValueKind.Object && j.TryGetProperty("avisos", out var av) && av.ValueKind == JsonValueKind.Array
             ? av.EnumerateArray().Select(x => x.GetString() ?? "").Where(x => x != "").ToList() : new List<string>();
         if (j.ValueKind == JsonValueKind.Object && j.TryGetProperty("erro", out var er) && er.ValueKind == JsonValueKind.String) avisos.Insert(0, er.GetString()!);
+        /* A lista traz só as mais recentes: a decidida pode não voltar. A escrita já aconteceu, então não lança. */
+        var rec = lista.FirstOrDefault(x => x.Id == recomendacaoId);
+        if (rec is null)
+        {
+            rec = RecomendacaoForaDaLista.Montar(antes, recomendacaoId, c.Slug, RecomendacaoForaDaLista.EstadoDe(Str(j, "decisao"), aceita));
+            avisos.Add(RecomendacaoForaDaLista.Aviso);
+        }
         foreach (var a in avisos) c.Acoes.Insert(0, new AcaoDoAgente(DateTime.Now, "motor", a, rec.Estado.ToString().ToLowerInvariant(), _usuario, null));
         Avisar();
         return rec;
@@ -389,7 +430,14 @@ public sealed class ApiNetApi : IBlueApi, IDisposable
         if (falhas.Count > 0) throw new InvalidOperationException($"saíram {novas.Count} arte(s), mas não saíram: {string.Join(" · ", falhas.Distinct())}");
         return novas;
     }
-    public Task AprovarArteAsync(Cliente c, string arteId, bool aprovada) { c.Artes.First(a => a.Id == arteId).Aprovada = aprovada; Avisar(); return Task.CompletedTask; }
+    public Task AprovarArteAsync(Cliente c, string arteId, bool aprovada)
+    {
+        c.Artes.First(a => a.Id == arteId).Aprovada = aprovada;
+        /* como na demonstração: arte reprovada deixa de ser piloto, e a reprovação sobrevive à releitura da sessão */
+        if (aprovada) _artesReprovadas.Remove(arteId);
+        else { _artesReprovadas.Add(arteId); foreach (var et in c.Pilotos.Where(kv => kv.Value == arteId).Select(kv => kv.Key).ToList()) c.Pilotos.Remove(et); }
+        Avisar(); return Task.CompletedTask;
+    }
     public Task EscolherPilotoAsync(Cliente c, Etapa etapa, string? arteId)
     {
         if (arteId is null) c.Pilotos.Remove(etapa); else c.Pilotos[etapa] = arteId;
@@ -411,21 +459,36 @@ public sealed class ApiNetApi : IBlueApi, IDisposable
         HttpResponseMessage r;
         try { r = await _lento.SendAsync(req); }
         catch (HttpRequestException e) { throw new InvalidOperationException($"não consegui falar com a API em {BaseUrl}: {e.Message}"); }
+        catch (OperationCanceledException) { throw EstadoIncerto("publicar", "a campanha do cliente"); }
         var texto = await r.Content.ReadAsStringAsync();
         if (r.StatusCode == System.Net.HttpStatusCode.Unauthorized) throw new InvalidOperationException("sem sessão na API: faça o login de novo.");
         ResultadoDoStart? res = null;
         try { res = JsonSerializer.Deserialize<ResultadoDoStart>(texto, Json); } catch { }
         if (res is null) throw new InvalidOperationException(Erro(ParseOuVazio(texto), $"a API respondeu {(int)r.StatusCode} ao publicar"));
-        if (!res.Ok) return new(false, res.Codigo, res.Motivo, res.Simulado, null, null);
+        /* Um não-2xx com `{error}` (403 "publicar na Meta é de head pra cima", escopo) desserializa sem código nem motivo:
+           o texto da API e o status vão no lugar. */
+        if (!res.Ok)
+            return new(false, res.Codigo ?? $"http_{(int)r.StatusCode}", res.Motivo ?? Erro(ParseOuVazio(texto), $"a API respondeu {(int)r.StatusCode} ao publicar"), res.Simulado, null, null);
         var pub = new Publicacao
         {
-            EstruturaHash = res.EstruturaHash ?? "", CampanhaId = res.CampanhaId, FormularioId = res.FormularioId, Link = res.Link, Estado = "ok",
+            EstruturaHash = res.EstruturaHash ?? "", CampanhaId = res.CampanhaId, FormularioId = res.FormularioId, Link = res.Link,
+            /* o que o banco grava: sem_criativo = campanha, formulário e conjuntos criados, e nenhum anúncio */
+            Estado = res.SemCriativo ? "sem_criativo" : "ok",
             NomeDaCampanha = res.Conjuntos.Count > 0 ? $"campanha {res.CampanhaId}" : "", VaultSha = Parametros.VaultSha,
         };
+        var etapaDoConjunto = new Dictionary<string, Etapa>();
         foreach (var cj in res.Conjuntos)
-            pub.Conjuntos.Add(new ConjuntoCriado(cj.Nome, Enum.TryParse<Etapa>(cj.Etapa, out var et) ? et : Etapa.MOFU, cj.Publico, cj.AdsetId ?? "", 0));
+        {
+            var etapa = Enum.TryParse<Etapa>(cj.Etapa, out var et) ? et : Etapa.MOFU;
+            pub.Conjuntos.Add(new ConjuntoCriado(cj.Nome, etapa, cj.Publico, cj.AdsetId ?? "", 0));
+            if (!string.IsNullOrEmpty(cj.AdsetId)) etapaDoConjunto[cj.AdsetId] = etapa;
+        }
+        /* cada anúncio leva o piloto da etapa do conjunto dele (não o primeiro piloto para todos) */
         foreach (var an in res.Anuncios)
-            pub.Anuncios.Add(new AnuncioCriado(an.Nome, an.AdsetId, an.AdId ?? "", c.Pilotos.Values.FirstOrDefault() ?? ""));
+        {
+            var piloto = an.AdsetId is not null && etapaDoConjunto.TryGetValue(an.AdsetId, out var etDoAd) && c.Pilotos.TryGetValue(etDoAd, out var id) ? id : c.Pilotos.Values.FirstOrDefault();
+            pub.Anuncios.Add(new AnuncioCriado(an.Nome, an.AdsetId ?? "", an.AdId ?? "", piloto ?? ""));
+        }
         pub.Avisos.AddRange(res.Avisos);
         if (res.SemCriativo && res.CriativoNaMao is { } cola)
         {

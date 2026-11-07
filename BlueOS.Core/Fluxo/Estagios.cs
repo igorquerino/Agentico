@@ -65,9 +65,13 @@ public static class Estagios
         var pend = new List<string>();
         if (c.Lotes.Count == 0) { pend.Add("nenhum lote gerado"); return (false, pend); }
         foreach (var et in EtapasExigidas(c, p))
-            if (!c.Pecas.Any(x => x.Etapa == et && x.Aprovada && x.CrivoOk)) pend.Add($"peça aprovada de {et}");
+            if (!c.Pecas.Any(x => CopyUsavel(x, et))) pend.Add($"peça aprovada de {et}");
         return (pend.Count == 0, pend);
     }
+
+    /// <summary>A peça de copy que serve ao criativo estático da etapa: da etapa, aprovada, que passou no crivo e
+    /// ESTÁTICA (um roteiro de vídeo não fecha a etapa nem vira arte estática no Designer).</summary>
+    public static bool CopyUsavel(PecaDeCopy x, Etapa et) => x.Etapa == et && x.Aprovada && x.CrivoOk && x.Tipo == TipoPeca.Estatico;
 
     /// <summary>Design pronto = um criativo piloto para CADA etapa que a faixa do budget pede.</summary>
     public static (bool Ok, List<string> Pendencias) DesignPronto(Cliente c, ParametrosMotor p)
@@ -101,7 +105,11 @@ public static class Estagios
         return saida;
     }
 
-    public static bool CampanhaPublicada(Cliente c) => c.Publicacao is { Estado: "ok" };
+    /// <summary>A campanha está na Meta: "ok", ou "sem_criativo" com a campanha criada (o caminho comum fora do MCP:
+    /// campanha, formulário e conjuntos pausados, e o anúncio fica para o gestor subir no Gerenciador). Sem isso, a
+    /// releitura do banco devolvia o cliente para Campanha e um novo Start criava uma 2ª campanha.</summary>
+    public static bool CampanhaPublicada(Cliente c) =>
+        c.Publicacao is { Estado: "ok" } || c.Publicacao is { Estado: "sem_criativo", CampanhaId: { Length: > 0 } };
 
     public static Estagio DoCliente(Cliente c, ParametrosMotor p)
     {

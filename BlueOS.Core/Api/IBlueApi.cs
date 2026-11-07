@@ -17,6 +17,32 @@ public sealed record ResultadoDaPublicacao(bool Ok, string? Codigo, string? Moti
 public sealed record ResultadoDaConta(bool Ok, string? Erro);
 public sealed record EstadoDoToken(bool? Valido, string? Motivo);
 
+/// <summary>A recomendação recém-decidida que não voltou na releitura (a lista traz só as mais recentes). A escrita já
+/// aconteceu, talvez na Meta: lançar erro agora faria o gestor achar que nada foi feito. Devolve a que a tela tinha
+/// (ou uma mínima) com o estado da resposta.</summary>
+internal static class RecomendacaoForaDaLista
+{
+    public const string Aviso = "a recomendação decidida não voltou na lista das mais recentes: o estado mostrado é o da resposta da API.";
+
+    public static EstadoDaRecomendacao EstadoDe(string? decisao, bool aceita) => decisao switch
+    {
+        "aceita" => EstadoDaRecomendacao.Aceita, "negada" => EstadoDaRecomendacao.Negada, "aplicada" => EstadoDaRecomendacao.Aplicada,
+        "falhou" => EstadoDaRecomendacao.Falhou, "incerto" => EstadoDaRecomendacao.Incerto,
+        _ => aceita ? EstadoDaRecomendacao.Aceita : EstadoDaRecomendacao.Negada,
+    };
+
+    public static Recomendacao Montar(Recomendacao? antes, string id, string slug, EstadoDaRecomendacao estado)
+    {
+        var r = antes ?? new Recomendacao
+        {
+            Id = id, ClienteSlug = slug, MetaId = "", Nome = "recomendação decidida", Acao = Acao.ALERTAR,
+            Decisao = new Decisao(Acao.ALERTAR, [], [], [], new NumerosDaDecisao(0, 0, null, null), false, null, false),
+        };
+        r.Estado = estado; r.DecididaEm ??= DateTime.Now;
+        return r;
+    }
+}
+
 public interface IBlueApi
 {
     /// <summary>"Demonstração" ou "V1 · http://...": o que a tela mostra no rodapé.</summary>
