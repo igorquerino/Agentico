@@ -1,9 +1,20 @@
 using System.Globalization;
 using System.Text.Json;
 using BlueOS.Api.Infra;
+using BlueOS.Core.Meta;
 using BlueOS.Core.Modelos;
 
 namespace BlueOS.Api.Dominio;
+
+/// <summary>A recusa da Graph numa leitura, com o código e o `is_transient`. Continua InvalidOperationException (a rota dos
+/// formulários e o filtro "(código 10)" dependem disso); o código separa o token recusado do limite e da instabilidade.</summary>
+public sealed class RecusaDaGraph(string frase, int? codigo, bool transitorio) : InvalidOperationException(frase)
+{
+    public int? Codigo { get; } = codigo;
+    public bool Transitorio { get; } = transitorio;
+    /// <summary>A Meta recusou o TOKEN (ou o acesso dele): só isso marca o token como inválido.</summary>
+    public bool TokenRecusado => GraphRegras.ClasseDe(Codigo, Message, Transitorio) is ClasseDoErro.Credencial or ClasseDoErro.Permanente;
+}
 
 /* ============================================================================
    A GRAPH API DA META, só leitura por enquanto: os formulários de cadastro da
@@ -39,13 +50,20 @@ public sealed class Meta(Db db, IHttpClientFactory fabrica, IConfiguration cfg)
        por token, para a carteira (448 clientes, 9 squads) custar 9 chamadas, não 448. */
     static readonly System.Collections.Concurrent.ConcurrentDictionary<string, (bool Ok, DateTime Em)> TokensConferidos = new();
 
+    /// <summary>O token responde ao `/me`? Só a recusa DO TOKEN (credencial, permissão) fica guardada como inválida por 15
+    /// minutos; limite de taxa, instabilidade, resposta que não é JSON e timeout não são veredito sobre o token: valem o
+    /// último veredito guardado, ou `false` sem guardar (a próxima chamada confere de novo).</summary>
     public async Task<bool> TokenValidoAsync(string token)
     {
         if (TokensConferidos.TryGetValue(token, out var v) && DateTime.UtcNow - v.Em < TimeSpan.FromMinutes(15)) return v.Ok;
         bool ok;
-        try { var me = await Get("me?fields=id,name", token); ok = me.TryGetProperty("id", out _); }
+        try { var me = await Get("me?fields=id,name", token); ok = me.ValueKind == JsonValueKind.Object && me.TryGetProperty("id", out _); }
+        catch (RecusaDaGraph e) when (e.TokenRecusado) { ok = false; }
+        catch (Exception e) when (e is RecusaDaGraph or HttpRequestException or TaskCanceledException)
+        {
+            return TokensConferidos.TryGetValue(token, out var antigo) && antigo.Ok;
+        }
         catch (InvalidOperationException) { ok = false; }
-        catch (HttpRequestException) { return TokensConferidos.TryGetValue(token, out var antigo) ? antigo.Ok : false; }
         TokensConferidos[token] = (ok, DateTime.UtcNow);
         return ok;
     }
@@ -55,11 +73,12 @@ public sealed class Meta(Db db, IHttpClientFactory fabrica, IConfiguration cfg)
     {
         var lista = clientes.ToList();
         if (lista.Count == 0) return;
-        var linhas = await db.ListaAsync("select upper(trim(squad_nome)) as squad_nome, meta_access_token, atualizado_em from public.trafego_integracoes where coalesce(meta_access_token, '') <> ''",
+        var linhas = await db.ListaAsync("select upper(trim(squad_nome)) as squad_nome, meta_access_token, atualizado_em from public.trafego_integracoes where coalesce(meta_access_token, '') <> '' order by atualizado_em desc",
             r => (Squad: r.S("squad_nome") ?? "", Token: r.S("meta_access_token") ?? "", Em: r.Dt("atualizado_em")));
         var validade = new Dictionary<string, bool>();
         await Task.WhenAll(linhas.Select(l => l.Token).Distinct().Select(async t => { var ok = await TokenValidoAsync(t); lock (validade) validade[t] = ok; }));
-        var porSquad = linhas.ToDictionary(l => l.Squad, l => (Valido: validade.GetValueOrDefault(l.Token), l.Em));
+        /* duas linhas do MESMO squad (caixa ou espaço diferentes) não derrubam a carteira: vale a mais recente */
+        var porSquad = linhas.GroupBy(l => l.Squad).ToDictionary(g => g.Key, g => (Valido: validade.GetValueOrDefault(g.First().Token), g.First().Em));
         foreach (var c in lista)
         {
             var squads = c.Squads.Concat([c.Squad]).Select(s => (s ?? "").Trim().ToUpperInvariant()).Where(s => s.Length > 0);
@@ -76,12 +95,13 @@ public sealed class Meta(Db db, IHttpClientFactory fabrica, IConfiguration cfg)
         var r = await http.GetAsync($"{Graph}/{caminho}{sep}access_token={Uri.EscapeDataString(token)}");
         var texto = await r.Content.ReadAsStringAsync();
         JsonElement j;
-        try { j = JsonDocument.Parse(texto).RootElement.Clone(); } catch { throw new InvalidOperationException($"a Meta respondeu algo que não é JSON ({(int)r.StatusCode})."); }
-        if (j.TryGetProperty("error", out var e))
+        try { j = JsonDocument.Parse(texto).RootElement.Clone(); } catch { throw new RecusaDaGraph($"a Meta respondeu algo que não é JSON ({(int)r.StatusCode}).", null, true); }
+        if (j.ValueKind == JsonValueKind.Object && j.TryGetProperty("error", out var e))
         {
-            var msg = e.TryGetProperty("message", out var m) ? m.GetString() : texto;
-            var code = e.TryGetProperty("code", out var cd) ? cd.GetRawText() : "?";
-            throw new InvalidOperationException($"a Meta recusou (código {code}): {msg}");
+            var msg = e.ValueKind == JsonValueKind.Object && e.TryGetProperty("message", out var m) ? m.GetString() : texto;
+            var code = e.ValueKind == JsonValueKind.Object && e.TryGetProperty("code", out var cd) ? cd.GetRawText() : "?";
+            var transitorio = e.ValueKind == JsonValueKind.Object && e.TryGetProperty("is_transient", out var t) && t.ValueKind == JsonValueKind.True;
+            throw new RecusaDaGraph($"a Meta recusou (código {code}): {msg}", int.TryParse(code, NumberStyles.Integer, CultureInfo.InvariantCulture, out var n) ? n : null, transitorio);
         }
         return j;
     }

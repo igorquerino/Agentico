@@ -21,6 +21,9 @@ public sealed record Reserva(bool Ok, bool Retentativa, string? Motivo, string? 
 public sealed record EstadoDaAplicacao(string Estado, string EstadoNoBanco, string? ComecouEmTexto, DateTime? ComecouEm);
 public sealed record RecomendacaoLida(Guid Id, string ClienteSlug, string Acao, string MetaId, JsonElement Numeros, IReadOnlyList<string> Chaves, string? VaultSha, string? Ultima);
 
+/// <summary>A recusa do `exigirAceite`: a frase é para o gestor (diferente de um erro do banco, que não sobe cru).</summary>
+public sealed class SemAceite(string frase) : InvalidOperationException(frase);
+
 public sealed class Registro(Db db, ILogger<Registro> log)
 {
     static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
@@ -46,9 +49,9 @@ public sealed class Registro(Db db, ILogger<Registro> log)
     /// <summary>SEM ACEITE, SEM ESCRITA. Relê do banco: a escrita fica amarrada a uma linha GRAVADA de aceite.</summary>
     public async Task<RecomendacaoLida> ExigirAceiteAsync(Guid recId)
     {
-        var rec = await LerAsync(recId) ?? throw new InvalidOperationException("recomendação não encontrada");
-        if (rec.Ultima == "aplicada") throw new InvalidOperationException("esta recomendação já foi aplicada na Meta: não há o que aplicar de novo.");
-        if (rec.Ultima != "aceita") throw new InvalidOperationException("esta recomendação não tem aceite registrado: não há o que aplicar.");
+        var rec = await LerAsync(recId) ?? throw new SemAceite("recomendação não encontrada");
+        if (rec.Ultima == "aplicada") throw new SemAceite("esta recomendação já foi aplicada na Meta: não há o que aplicar de novo.");
+        if (rec.Ultima != "aceita") throw new SemAceite("esta recomendação não tem aceite registrado: não há o que aplicar.");
         return rec;
     }
 
@@ -110,7 +113,11 @@ public sealed class Registro(Db db, ILogger<Registro> log)
             if (alvo is not null && e.Message.Contains("duplicar_em_voo"))
                 return new Reserva(false, false, "já existe uma cópia deste conjunto sendo criada agora: uma cópia por original. Espere ela terminar.", "em_voo");
         }
-        catch (Exception e) { return new Reserva(false, false, e.Message, "erro"); }
+        catch (Exception e)
+        {
+            log.LogError("a reserva da aplicação {Rec} não gravou: {Erro}", recId, e.Message);
+            return new Reserva(false, false, "não consegui reservar a aplicação no banco agora: nada foi enviado à Meta. Tente de novo em instantes.", "erro");
+        }
 
         if (await FalhaPermanenteAsync(recId)) return new Reserva(false, false, MotivoDoEstado("falhou_permanente"), "falhou_permanente");
 

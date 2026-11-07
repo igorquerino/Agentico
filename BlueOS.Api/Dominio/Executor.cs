@@ -34,40 +34,42 @@ public sealed record ResultadoDaAplicacao(
     bool Ok, string Desfecho, TipoNaMeta TipoNaMeta, ResultadoMeta R, string? CopiaId, VerbaDaCopia? VerbaDaCopia, AtivacaoDaCopia? Ativacao,
     (string Codigo, string Motivo)? Barrada, EstadoAoVivo? EstadoAnterior, IReadOnlyList<string> Avisos, ClasseDoErro? Classe, int AguardarMs);
 
-public sealed class Executor(Db db, MetaEscrita meta, MetaGraph graph, Registro registro, Automacao automacao, Carteira carteira, ILogger<Executor> log)
+public sealed class Executor(Db db, MetaEscrita meta, MetaGraph graph, Registro registro, Automacao automacao, Carteira carteira, CopyAgente copy, ILogger<Executor> log)
 {
     static readonly string[] VerbosDeVerba = ["mudou_orcamento", "duplicou_conjunto", "editou_conjunto"];
 
     /* ---- a folga do mês (D2) ---------------------------------------------------- */
 
-    public async Task<Folga> FolgaDoClienteAsync(string slug, DateTime agora)
+    /// <summary>A folga do mês com o que o banco guarda; a conta é Travas.FolgaDoMes. Entram também as cópias do motor
+    /// ('aplicada', 'incerto' e as outras em voo) criadas desde a última carga e que a foto ainda não tem.</summary>
+    public async Task<Folga> FolgaDoClienteAsync(string slug, DateTime agora, Guid? exceto = null)
     {
+        if (Fuso.AvisoDoFuso() is { } avisoDoFuso) log.LogWarning("{Aviso}", avisoDoFuso);
         var hoje = Fuso.DiaDaConta(agora);
         var inicioDoMes = new DateOnly(hoje.Year, hoje.Month, 1);
         var seteDiasAtras = hoje.AddDays(-7);
         var desde = seteDiasAtras < inicioDoMes ? seteDiasAtras : inicioDoMes;
         var budget = (await db.ListaAsync(Sql.Fmt($"select ce.budget_ads_mensal from public.cliente_estrategia ce join public.clientes c on c.cliente_id = ce.cliente_id where c.cliente_slug = {slug}"), r => r.Dec("budget_ads_mensal"))).FirstOrDefault();
         var insights = await db.ListaAsync(Sql.Fmt($"select adset_id, dia, sum(gasto) as gasto from public.trafego_insight_dia where cliente_slug = {slug} and dia >= {desde} group by adset_id, dia"),
-            r => (Adset: r.S("adset_id"), Dia: r.Data("dia") ?? hoje, Gasto: r.Dec("gasto") ?? 0m));
+            r => new GastoDoDia(r.S("adset_id"), r.Data("dia") ?? hoje, r.Dec("gasto") ?? 0m));
         var fotos = await db.ListaAsync(Sql.Fmt($"select adset_id, status, orcamento_diario_centavos from public.trafego_adset_estado where cliente_slug = {slug}"),
-            r => (Adset: r.S("adset_id") ?? "", Status: r.S("status"), Verba: r.L("orcamento_diario_centavos")));
-        var gasto = insights.Where(i => i.Dia >= inicioDoMes).Sum(i => i.Gasto);
-        var ativos = fotos.Where(f => f.Status == "ACTIVE").ToList();
-        var proprias = ativos.Sum(f => Math.Max(0, f.Verba));
-        /* O conjunto ativo sem verba própria (CBO) também gasta: a diária é a média do que ele gastou nos dias em que
-           gastou, conjunto por conjunto. */
-        var semVerba = ativos.Where(f => f.Verba <= 0).Select(f => f.Adset).ToHashSet();
-        var porConjunto = new Dictionary<string, (decimal Gasto, HashSet<DateOnly> Dias)>();
-        foreach (var i in insights)
-        {
-            if (i.Adset is null || !semVerba.Contains(i.Adset) || i.Dia < seteDiasAtras || i.Dia >= hoje) continue;
-            (decimal Gasto, HashSet<DateOnly> Dias) c = porConjunto.TryGetValue(i.Adset, out var x) ? x : (0m, new HashSet<DateOnly>());
-            c.Gasto += i.Gasto; if (i.Gasto > 0) c.Dias.Add(i.Dia);
-            porConjunto[i.Adset] = c;
-        }
-        var estimadas = (long)Math.Round(porConjunto.Values.Sum(c => (double)c.Gasto * 100 / Math.Max(1, c.Dias.Count)));
-        return Travas.MontarFolga(budget is > 0 ? Dinheiro.CentavosDe(budget.Value) : null, (long)Math.Round(gasto * 100), proprias, estimadas, Travas.DiasRestantesNoMes(hoje));
+            r => new FotoDoConjunto(r.S("adset_id") ?? "", r.S("status"), r.L("orcamento_diario_centavos")));
+        /* As cópias desde a última carga (com uma hora de folga para a carga que leu a conta antes da cópia nascer). */
+        var copias = await db.ListaAsync(Sql.Fmt($"""
+            select a.estado, a.resultado->>'copia_id' as copia_id,
+                   a.resultado->'verba_da_copia'->>'pedida' as pedida, a.resultado->'verba_da_copia'->>'ok' as verba_ok,
+                   a.resultado->'estado_anterior'->'conjunto'->>'diarioCentavos' as diaria_original,
+                   r.numeros->>'copia_diario_centavos' as pedida_na_rec
+            from public.trafego_motor_aplicacao a join public.trafego_motor_recomendacao r on r.id = a.recomendacao_id
+            where r.cliente_slug = {slug} and a.tipo = 'duplicate_adset' and a.estado in ('aplicada', 'incerto', 'em_voo')
+              and ({exceto} is null or a.recomendacao_id <> {exceto})
+              and a.comecou_em >= coalesce((select max(e.visto_em) from public.trafego_adset_estado e where e.cliente_slug = {slug}) - interval '1 hour', now() - interval '31 days')
+            """), r => new CopiaDoMotor(r.S("estado") ?? "", r.S("copia_id"), Centavos(r.S("pedida")) ?? Centavos(r.S("pedida_na_rec")), r.S("verba_ok") == "true", Centavos(r.S("diaria_original"))));
+        return Travas.FolgaDoMes(budget, insights, fotos, copias, hoje);
     }
+
+    static long? Centavos(string? texto) =>
+        decimal.TryParse(texto, System.Globalization.NumberStyles.Number, System.Globalization.CultureInfo.InvariantCulture, out var d) && d > 0 ? (long)Math.Round(d) : null;
 
     /// <summary>Quantas escritas que mexem em verba esta CONTA teve na última hora: as aplicações do motor (em voo,
     /// aplicada, incerto; menos a desta recomendação) mais as linhas manuais do log de ação.</summary>
@@ -105,15 +107,30 @@ public sealed class Executor(Db db, MetaEscrita meta, MetaGraph graph, Registro 
         saida.MantidosPausados = daCopia.Count(a => a.Status != "ACTIVE") - aAtivar.Count;
         if (aAtivar.Count == 0 && !daCopia.Any(a => a.Status == "ACTIVE")) { saida.Erro = "nenhum anúncio da cópia veio de um anúncio ativo do original"; return saida; }
 
-        var noConjunto = await meta.AplicarNaMetaAsync(cred, "ativar_copia", copiaId, new Dictionary<string, object?>());
-        saida.Escritas++;
-        saida.Conjunto = noConjunto.Ok;
-        if (!noConjunto.Ok) { saida.Erro = noConjunto.Erro ?? "a Meta recusou ativar o conjunto"; return saida; }
+        /* NUNCA LANÇA (executor.ts): a cópia já existe, e perdê-la de vista é pior que uma ativação incompleta com aviso. */
+        try
+        {
+            var noConjunto = await meta.AplicarNaMetaAsync(cred, "ativar_copia", copiaId, new Dictionary<string, object?>());
+            saida.Escritas++;
+            saida.Conjunto = noConjunto.Ok;
+            if (!noConjunto.Ok) { saida.Erro = noConjunto.Erro ?? "a Meta recusou ativar o conjunto"; return saida; }
+        }
+        catch (Exception e)
+        {
+            saida.Escritas++;
+            saida.Erro = $"a Meta não respondeu ao ativar o conjunto da cópia ({MetaGraph.Sanear(e.Message)}): ele pode ter ficado ativo, confira no Gerenciador";
+            return saida;
+        }
         foreach (var a in aAtivar)
         {
-            var r = await meta.AplicarNaMetaAsync(cred, "ativar_copia", a.Id, new Dictionary<string, object?>());
+            /* `ativar_copia_ad`: no MCP o anúncio vai como entidade "ad", não "ad_set" */
+            try
+            {
+                var r = await meta.AplicarNaMetaAsync(cred, "ativar_copia_ad", a.Id, new Dictionary<string, object?>());
+                if (r.Ok) saida.Ativados++; else saida.Falharam++;
+            }
+            catch (Exception e) { saida.Falharam++; log.LogWarning("a ativação do anúncio {Ad} da cópia não respondeu: {Erro}", a.Id, MetaGraph.Sanear(e.Message)); }
             saida.Escritas++;
-            if (r.Ok) saida.Ativados++; else saida.Falharam++;
         }
         if (saida.Falharam > 0) saida.Erro = $"o conjunto foi ativado, mas {saida.Falharam} anúncio(s) da cópia não";
         return saida;
@@ -144,92 +161,111 @@ public sealed class Executor(Db db, MetaEscrita meta, MetaGraph graph, Registro 
             return new ResultadoDaAplicacao(false, "falhou", tipo, ResultadoMeta.Falha(motivoDaTrava, false), null, null, null, (codigo, motivoDaTrava), estadoAnterior, [], null, 0);
         }
 
-        /* ---- a. a credencial e o isolamento: o token do squad alcança VÁRIAS contas ---- */
-        var (cred, erroCred) = await meta.CredenciaisDoClienteAsync(rec.ClienteSlug);
-        if (cred is null) return await Barrar("conta_nao_elegivel", erroCred ?? "sem credencial", null);
-        var dono = await meta.AlvoPertenceAoClienteAsync(cred, rec.MetaId);
-        if (!dono.Ok) return await Barrar("isolamento", dono.Motivo, null);
-
-        /* ---- a½. a saúde do token (3.7): sem app no ambiente não barra ---------- */
-        var saude = await meta.SaudeDoTokenAsync(cred.Token);
-        if (saude.Estado == "nao_serve") return await Barrar("token_nao_serve", saude.Motivo ?? "o token não serve para o motor", null);
-
-        /* ---- b. as travas de dinheiro, com a leitura ao vivo --------------------- */
-        long? pedida = rec.Numeros.ValueKind == JsonValueKind.Object && rec.Numeros.TryGetProperty("copia_diario_centavos", out var cd) && cd.ValueKind == JsonValueKind.Number && cd.GetDouble() > 0 ? (long)Math.Round(cd.GetDouble()) : null;
-        var vivo = await meta.LerAoVivoAsync(cred, rec.MetaId);
-        var folga = tipo == TipoNaMeta.DuplicateAdset ? await FolgaDoClienteAsync(rec.ClienteSlug, DateTime.UtcNow) : Travas.MontarFolga(null, 0, 0, 0, 1);
-        var mudancas = tipo == TipoNaMeta.DuplicateAdset ? await MudancasDeVerbaNaUltimaHoraAsync(rec.ClienteSlug, rec.Id) : 0;
-        var trava = Travas.TravasDeDinheiro(tipo, pedida, folga, mudancas, escritasNaRodada, vivo, limites);
-        if (!trava.Ok) return await Barrar(trava.Codigo!.Value.Slug(), trava.Motivo!, vivo);
-        var avisos = new List<string>(trava.Avisos);
-
-        /* ---- c. a escrita, pela única porta de baixo ------------------------------ */
-        var parametros = new Dictionary<string, object?>();
-        if (tipo == TipoNaMeta.DuplicateAdset && trava.CopiaCentavos is { } cc) parametros["daily_budget_cents"] = cc;
-        var copiaNasce = tipo == TipoNaMeta.DuplicateAdset && limites?.CopiaNasce == "ACTIVE" ? "ACTIVE" : "PAUSED";
-        ResultadoMeta r; var semResposta = false;
-        try { r = await meta.AplicarNaMetaAsync(cred, tipoNaGraph, rec.MetaId, parametros); }
-        catch (Exception e) { semResposta = true; r = ResultadoMeta.Falha($"a Meta não respondeu ({MetaGraph.Sanear(e.Message)}): a ação pode ter acontecido", true); }
-
-        /* ---- d. a verba da cópia, numa segunda escrita (o /copies ignora params) --- */
-        VerbaDaCopia? verbaDaCopia = null;
-        var centavosDaCopia = trava.CopiaCentavos ?? 0;
-        if (r.Ok && tipo == TipoNaMeta.DuplicateAdset && centavosDaCopia > 0 && r.Id is not null)
+        /* A RESERVA SEMPRE FECHA: exceção antes do POST valendo (banco, leitura) não escreveu nada e fecha 'falhou', que
+           reabre; depois dele, a escrita pode ter acontecido e fecha 'incerto'. Nunca fica 'em_voo' sem desfecho. */
+        var chamouAMeta = false;
+        try
         {
-            try
+            /* ---- a. a credencial e o isolamento: o token do squad alcança VÁRIAS contas ---- */
+            var (cred, erroCred) = await meta.CredenciaisDoClienteAsync(rec.ClienteSlug);
+            if (cred is null) return await Barrar("conta_nao_elegivel", erroCred ?? "sem credencial", null);
+            var dono = await meta.AlvoPertenceAoClienteAsync(cred, rec.MetaId);
+            if (!dono.Ok) return await Barrar("isolamento", dono.Motivo, null);
+
+            /* ---- a½. a saúde do token (3.7): sem app no ambiente não barra ---------- */
+            var saude = await meta.SaudeDoTokenAsync(cred.Token);
+            if (saude.Estado == "nao_serve") return await Barrar("token_nao_serve", saude.Motivo ?? "o token não serve para o motor", null);
+
+            /* ---- b. as travas de dinheiro, com a leitura ao vivo --------------------- */
+            long? pedida = rec.Numeros.ValueKind == JsonValueKind.Object && rec.Numeros.TryGetProperty("copia_diario_centavos", out var cd) && cd.ValueKind == JsonValueKind.Number && cd.GetDouble() > 0 ? (long)Math.Round(cd.GetDouble()) : null;
+            var vivo = await meta.LerAoVivoAsync(cred, rec.MetaId);
+            var folga = tipo == TipoNaMeta.DuplicateAdset ? await FolgaDoClienteAsync(rec.ClienteSlug, DateTime.UtcNow, rec.Id) : Travas.MontarFolga(null, 0, 0, 0, 1);
+            var mudancas = tipo == TipoNaMeta.DuplicateAdset ? await MudancasDeVerbaNaUltimaHoraAsync(rec.ClienteSlug, rec.Id) : 0;
+            var trava = Travas.TravasDeDinheiro(tipo, pedida, folga, mudancas, escritasNaRodada, vivo, limites);
+            if (!trava.Ok) return await Barrar(trava.Codigo!.Value.Slug(), trava.Motivo!, vivo);
+            var avisos = new List<string>(trava.Avisos);
+
+            /* ---- c. a escrita, pela única porta de baixo ------------------------------ */
+            var parametros = new Dictionary<string, object?>();
+            if (tipo == TipoNaMeta.DuplicateAdset && trava.CopiaCentavos is { } cc) parametros["daily_budget_cents"] = cc;
+            var copiaNasce = tipo == TipoNaMeta.DuplicateAdset && limites?.CopiaNasce == "ACTIVE" ? "ACTIVE" : "PAUSED";
+            ResultadoMeta r; var semResposta = false;
+            chamouAMeta = true;
+            try { r = await meta.AplicarNaMetaAsync(cred, tipoNaGraph, rec.MetaId, parametros); }
+            catch (Exception e) { semResposta = true; r = ResultadoMeta.Falha($"a Meta não respondeu ({MetaGraph.Sanear(e.Message)}): a ação pode ter acontecido", true); }
+
+            /* ---- d. a verba da cópia, numa segunda escrita (o /copies ignora params) --- */
+            VerbaDaCopia? verbaDaCopia = null;
+            var centavosDaCopia = trava.CopiaCentavos ?? 0;
+            if (r.Ok && tipo == TipoNaMeta.DuplicateAdset && centavosDaCopia > 0 && r.Id is not null)
             {
-                var up = await meta.AplicarNaMetaAsync(cred, "update_adset", r.Id, new Dictionary<string, object?> { ["daily_budget"] = centavosDaCopia.ToString() });
-                verbaDaCopia = new VerbaDaCopia(centavosDaCopia, up.Ok, up.Ok ? null : up.Erro);
+                try
+                {
+                    var up = await meta.AplicarNaMetaAsync(cred, "update_adset", r.Id, new Dictionary<string, object?> { ["daily_budget"] = centavosDaCopia.ToString() });
+                    verbaDaCopia = new VerbaDaCopia(centavosDaCopia, up.Ok, up.Ok ? null : up.Erro);
+                }
+                catch (Exception e) { verbaDaCopia = new VerbaDaCopia(centavosDaCopia, false, MetaGraph.Sanear(e.Message)); }
+                if (verbaDaCopia is { Ok: false }) avisos.Add(Travas.TextoDaCopia(verbaDaCopia, copiaNasce, null));
             }
-            catch (Exception e) { verbaDaCopia = new VerbaDaCopia(centavosDaCopia, false, MetaGraph.Sanear(e.Message)); }
-            if (verbaDaCopia is { Ok: false }) avisos.Add(Travas.TextoDaCopia(verbaDaCopia, copiaNasce, null));
+
+            /* ---- d½. a ativação da cópia, depois da verba (D1) ------------------------- */
+            AtivacaoDaCopia? ativacao = null;
+            if (r.Ok && tipo == TipoNaMeta.DuplicateAdset && copiaNasce == "ACTIVE" && r.Id is not null)
+            {
+                if (verbaDaCopia is { Ok: false }) avisos.Add("A cópia NÃO foi ativada porque a verba dela não entrou: ela fica pausada com a verba do original. Ajuste a verba no Gerenciador antes de ativar.");
+                else if (centavosDaCopia <= 0) avisos.Add("A cópia ficou PAUSADA de propósito: este conjunto está em CBO, a verba é da campanha e a cópia a herda sem passar pela folga do mês. Ativar é no Gerenciador, conferindo a verba da campanha.");
+                else { ativacao = await AtivarCopiaAsync(cred, r.Id, rec.MetaId); avisos.Add(Travas.TextoDaCopia(verbaDaCopia, copiaNasce, ativacao)); }
+            }
+
+            /* ---- e. o log de ação, só quando a Meta confirmou -------------------------- */
+            if (r.Ok)
+                await registro.LogAcaoAsync(rec.ClienteSlug, tipo.VerboNoLog(), "conjunto", rec.MetaId, null, por.ToString(),
+                    new { via = origem == "cron" ? "chat" : "tela", motor = true, automatico = origem == "cron", recomendacao_id = rec.Id, acao_do_motor = rec.Acao, copia_id = r.Id, verba_da_copia = verbaDaCopia });
+
+            /* ---- f. o desfecho: 'aplicada', 'falhou' (recusa limpa) ou 'incerto' (Travas.Desfecho) -------- */
+            var fim = Travas.Desfecho(tipo, r.Ok, semResposta, r.Alterou, r.ErroMeta is not null, r.Simulado, r.Classe, r.AguardarMs);
+            var desfecho = fim.Estado; var classe = fim.Classe; var aguardarMs = fim.AguardarMs;
+            var resultado = new
+            {
+                ok = r.Ok, erro = r.Ok ? null : r.Erro, alterou = r.Ok || r.Alterou, tipo = tipoNaGraph, simulado = r.Simulado, via = r.Via,
+                copia_id = r.Ok ? r.Id : null, verba_da_copia = verbaDaCopia, estado_anterior = vivo, folga = tipo == TipoNaMeta.DuplicateAdset ? folga : null,
+                avisos_da_porta = avisos, classe = classe?.ToString().ToLowerInvariant(), permanente = fim.Permanente, aguardar_ms = aguardarMs,
+            };
+            try { await registro.RegistrarDecisaoAsync(rec.Id, desfecho, por, motivo, resultado); } catch (Exception e) { log.LogError("a decisão de desfecho não gravou: {Erro}", e.Message); }
+            await registro.FecharAplicacaoAsync(rec.Id, desfecho, resultado);
+
+            /* ---- o sino (3.6) e a trilha ------------------------------------------------- */
+            var sufixo = origem == "cron" ? " (automático)" : "";
+            if (r.Ok)
+                await registro.AvisarAsync(rec.ClienteSlug, "acao_executada", rec.MetaId, $"{(acaoLegivel == "pausar" ? "Pausou" : "Duplicou")} \"{nome}\"{sufixo}",
+                    tipo == TipoNaMeta.DuplicateAdset ? Travas.TextoDaCopia(verbaDaCopia) : "O conjunto está pausado na Meta.", new { tipo = tipoNaGraph, copia_id = r.Id, origem }, rec.Id);
+            else if (r.Simulado)
+                avisos.Add(r.Erro ?? "fora da produção: só ensaio, nada foi alterado");
+            else if (classe == ClasseDoErro.Credencial)
+                await registro.AvisarAsync(rec.ClienteSlug, "token_vencido", "conta", "O token da conta não serve mais", $"A Meta recusou a credencial ao {acaoLegivel} \"{nome}\": {r.Erro}. Reconecte a conta no Setup.", new { classe = "credencial", origem }, rec.Id);
+            else
+                await registro.AvisarAsync(rec.ClienteSlug, desfecho == "incerto" ? "incerto" : "falha", rec.MetaId, desfecho == "incerto" ? $"Sem resposta da Meta ao {acaoLegivel} \"{nome}\"{sufixo}" : $"A Meta recusou {acaoLegivel} \"{nome}\"{sufixo}",
+                    desfecho == "incerto" ? $"{r.Erro}. A reconciliação do cron confere amanhã; se tiver pressa, olhe o Gerenciador." : $"{r.Erro}{(classe == ClasseDoErro.Permanente ? " Repetir não conserta: a recomendação fica fechada até a causa ser corrigida." : "")}",
+                    new { classe = classe?.ToString().ToLowerInvariant(), aguardar_ms = aguardarMs, origem }, rec.Id);
+            await registro.TrilhaAsync("aplicou_na_meta", por, rec.ClienteSlug, r.Ok ? "ok" : "erro", r.Ok ? null : r.Erro, tipoNaGraph, rec.MetaId,
+                new { via = "motor", rota = r.Via, recomendacao_id = rec.Id, tipo = tipoNaGraph, target_id = rec.MetaId, automatico = origem == "cron", simulado = r.Simulado }, origem: origem);
+
+            return new ResultadoDaAplicacao(r.Ok, desfecho, tipo, r, r.Ok ? r.Id : null, verbaDaCopia, ativacao, null, vivo, avisos, classe, aguardarMs);
         }
-
-        /* ---- d½. a ativação da cópia, depois da verba (D1) ------------------------- */
-        AtivacaoDaCopia? ativacao = null;
-        if (r.Ok && tipo == TipoNaMeta.DuplicateAdset && copiaNasce == "ACTIVE" && r.Id is not null)
+        catch (Exception e) when (!chamouAMeta)
         {
-            if (verbaDaCopia is { Ok: false }) avisos.Add("A cópia NÃO foi ativada porque a verba dela não entrou: ela fica pausada com a verba do original. Ajuste a verba no Gerenciador antes de ativar.");
-            else if (centavosDaCopia <= 0) avisos.Add("A cópia ficou PAUSADA de propósito: este conjunto está em CBO, a verba é da campanha e a cópia a herda sem passar pela folga do mês. Ativar é no Gerenciador, conferindo a verba da campanha.");
-            else { ativacao = await AtivarCopiaAsync(cred, r.Id, rec.MetaId); avisos.Add(Travas.TextoDaCopia(verbaDaCopia, copiaNasce, ativacao)); }
+            log.LogError("a aplicação de {Rec} parou antes de chamar a Meta: {Erro}", rec.Id, MetaGraph.Sanear(e.Message));
+            return await Barrar("erro_interno", "não consegui preparar a escrita (um erro interno ao ler o banco ou a Meta): nada foi enviado à Meta. Tente de novo em instantes.", null);
         }
-
-        /* ---- e. o log de ação, só quando a Meta confirmou -------------------------- */
-        if (r.Ok)
-            await registro.LogAcaoAsync(rec.ClienteSlug, tipo.VerboNoLog(), "conjunto", rec.MetaId, null, por.ToString(),
-                new { via = origem == "cron" ? "chat" : "tela", motor = true, automatico = origem == "cron", recomendacao_id = rec.Id, acao_do_motor = rec.Acao, copia_id = r.Id, verba_da_copia = verbaDaCopia });
-
-        /* ---- f. o desfecho: 'aplicada', 'falhou' (recusa limpa) ou 'incerto' -------- */
-        var copiaSemCerteza = !r.Ok && tipo == TipoNaMeta.DuplicateAdset && r.ErroMeta is not null && !r.Simulado;
-        var desfecho = r.Ok ? "aplicada" : (semResposta || r.Alterou || copiaSemCerteza) ? "incerto" : "falhou";
-        ClasseDoErro? classe = r.Ok ? null : semResposta ? ClasseDoErro.Temporario : (r.Classe ?? ClasseDoErro.Desconhecido);
-        var aguardarMs = r.Ok ? r.AguardarMs : (r.AguardarMs > 0 ? r.AguardarMs : classe == ClasseDoErro.Temporario ? 60_000 : 0);
-        var resultado = new
+        catch (Exception e)
         {
-            ok = r.Ok, erro = r.Ok ? null : r.Erro, alterou = r.Ok || r.Alterou, tipo = tipoNaGraph, simulado = r.Simulado, via = r.Via,
-            copia_id = r.Ok ? r.Id : null, verba_da_copia = verbaDaCopia, estado_anterior = vivo, folga = tipo == TipoNaMeta.DuplicateAdset ? folga : null,
-            avisos_da_porta = avisos, classe = classe?.ToString().ToLowerInvariant(), permanente = classe == ClasseDoErro.Permanente, aguardar_ms = aguardarMs,
-        };
-        try { await registro.RegistrarDecisaoAsync(rec.Id, desfecho, por, motivo, resultado); } catch (Exception e) { log.LogError("a decisão de desfecho não gravou: {Erro}", e.Message); }
-        await registro.FecharAplicacaoAsync(rec.Id, desfecho, resultado);
-
-        /* ---- o sino (3.6) e a trilha ------------------------------------------------- */
-        var sufixo = origem == "cron" ? " (automático)" : "";
-        if (r.Ok)
-            await registro.AvisarAsync(rec.ClienteSlug, "acao_executada", rec.MetaId, $"{(acaoLegivel == "pausar" ? "Pausou" : "Duplicou")} \"{nome}\"{sufixo}",
-                tipo == TipoNaMeta.DuplicateAdset ? Travas.TextoDaCopia(verbaDaCopia) : "O conjunto está pausado na Meta.", new { tipo = tipoNaGraph, copia_id = r.Id, origem }, rec.Id);
-        else if (r.Simulado)
-            avisos.Add(r.Erro ?? "fora da produção: só ensaio, nada foi alterado");
-        else if (classe == ClasseDoErro.Credencial)
-            await registro.AvisarAsync(rec.ClienteSlug, "token_vencido", "conta", "O token da conta não serve mais", $"A Meta recusou a credencial ao {acaoLegivel} \"{nome}\": {r.Erro}. Reconecte a conta no Setup.", new { classe = "credencial", origem }, rec.Id);
-        else
-            await registro.AvisarAsync(rec.ClienteSlug, desfecho == "incerto" ? "incerto" : "falha", rec.MetaId, desfecho == "incerto" ? $"Sem resposta da Meta ao {acaoLegivel} \"{nome}\"{sufixo}" : $"A Meta recusou {acaoLegivel} \"{nome}\"{sufixo}",
-                desfecho == "incerto" ? $"{r.Erro}. A reconciliação do cron confere amanhã; se tiver pressa, olhe o Gerenciador." : $"{r.Erro}{(classe == ClasseDoErro.Permanente ? " Repetir não conserta: a recomendação fica fechada até a causa ser corrigida." : "")}",
-                new { classe = classe?.ToString().ToLowerInvariant(), aguardar_ms = aguardarMs, origem }, rec.Id);
-        await registro.TrilhaAsync("aplicou_na_meta", por, rec.ClienteSlug, r.Ok ? "ok" : "erro", r.Ok ? null : r.Erro, tipoNaGraph, rec.MetaId,
-            new { via = "motor", rota = r.Via, recomendacao_id = rec.Id, tipo = tipoNaGraph, target_id = rec.MetaId, automatico = origem == "cron", simulado = r.Simulado }, origem: origem);
-
-        return new ResultadoDaAplicacao(r.Ok, desfecho, tipo, r, r.Ok ? r.Id : null, verbaDaCopia, ativacao, null, vivo, avisos, classe, aguardarMs);
+            /* depois do POST valendo: a ação pode ter acontecido. Fecha 'incerto' (no-op se o desfecho já fechou). */
+            log.LogError("a aplicação de {Rec} parou depois de chamar a Meta: {Erro}", rec.Id, MetaGraph.Sanear(e.Message));
+            const string erro = "um erro interno interrompeu o registro depois da escrita na Meta: ela pode ter acontecido. Confira o conjunto no Gerenciador antes de qualquer coisa.";
+            await registro.FecharAplicacaoAsync(rec.Id, "incerto", new { ok = false, alterou = true, erro, tipo = tipoNaGraph, classe = "desconhecido", permanente = false });
+            await registro.TrilhaAsync("aplicou_na_meta", por, rec.ClienteSlug, "erro", erro, tipoNaGraph, rec.MetaId, new { via = "motor", recomendacao_id = rec.Id, tipo = tipoNaGraph, automatico = origem == "cron" }, origem: origem);
+            return new ResultadoDaAplicacao(false, "incerto", tipo, ResultadoMeta.Falha(erro, true, ClasseDoErro.Desconhecido), null, null, null, null, null, [], ClasseDoErro.Desconhecido, 0);
+        }
     }
 
     /* ---- a decisão do gestor (a rota) ------------------------------------------- */
@@ -264,7 +300,11 @@ public sealed class Executor(Db db, MetaEscrita meta, MetaGraph graph, Registro 
         {
             EstadoDaAplicacao? aplic;
             try { aplic = await registro.EstadoDaAplicacaoAsync(recId); }
-            catch (Exception e) { return (503, new { error = $"não consegui conferir se esta recomendação já foi aplicada: {e.Message}. Nada foi gravado." }); }
+            catch (Exception e)
+            {
+                log.LogError("o estado da aplicação de {Rec} não foi lido: {Erro}", recId, e.Message);
+                return (503, new { error = "não consegui conferir no banco se esta recomendação já foi aplicada. Nada foi gravado; tente de novo em instantes." });
+            }
             if (aplic is not null && aplic.Estado is not ("falhou" or "sem_escrita"))
                 return (409, new
                 {
@@ -286,20 +326,24 @@ public sealed class Executor(Db db, MetaEscrita meta, MetaGraph graph, Registro 
                 var cj = ongoing.Conjuntos.FirstOrDefault(x => x.AdsetId == rec.MetaId);
                 if (cj is null) return (409, new { error = "não consigo reconferir este conjunto na carga de hoje: ele pode ter sido apagado na Meta. Rode o motor de novo.", obsoleta = true });
                 var formato = await db.UmAsync(Sql.Fmt($"select formato from public.trafego_adset_estado where adset_id = {rec.MetaId} and cliente_slug = {slug}"), r => r.S("formato"));
-                var hoje = Arvore.Decidir(EntradaDe(cj, slug, formato), new EntradaAoVivo(cj.Ativo, cj.DiarioCentavos),
+                /* sem verba própria na foto (CBO, vitalício) é null, e não 0: com 0 a árvore tomava o ramo ABO */
+                var hoje = Arvore.Decidir(EntradaDe(cj, slug, formato), new EntradaAoVivo(cj.Ativo, cj.DiarioCentavos > 0 ? (long?)cj.DiarioCentavos : null),
                     cli.TetoMql is > 0 ? Dinheiro.CentavosDe(cli.TetoMql.Value) : null,
                     ongoing.Conjuntos.Any(x => x.Leads.Any(l => l.Situacao == Situacao.Mql)), ParametrosMotor.PadraoDoVault);
-                var mesmasChaves = string.Join(",", hoje.Chaves.OrderBy(x => x, StringComparer.Ordinal)) == string.Join(",", rec.Chaves.OrderBy(x => x, StringComparer.Ordinal));
-                if (hoje.Acao.ToString() != rec.Acao || !mesmasChaves)
+                /* o vault de agora é o MESMO que a rodada do motor grava na recomendação (MotorRodada) */
+                var vaultDeAgora = (await copy.VaultAsync())?.Sha ?? ParametrosMotor.PadraoDoVault.VaultSha;
+                if (Travas.Obsoleta(rec.Acao, rec.Chaves, rec.VaultSha, hoje.Acao.ToString(), hoje.Chaves, vaultDeAgora))
                     return (409, new
                     {
                         error = "esta recomendação está obsoleta: os números ou as regras mudaram desde que ela foi feita. Rode o motor de novo e decida sobre a recomendação nova.",
                         obsoleta = true, acao_de_antes = rec.Acao, acao_de_agora = hoje.Acao.ToString(), chaves_de_antes = rec.Chaves, chaves_de_agora = hoje.Chaves,
+                        vault_de_antes = rec.VaultSha, vault_de_agora = vaultDeAgora,
                     });
             }
             catch (Exception e) when (e is not InvalidOperationException { Message: var m } || !m.Contains("escopo"))
             {
-                return (503, new { error = $"não consegui reconferir a árvore antes de aplicar: {e.Message}. Nada foi alterado." });
+                log.LogError("a reconferência da árvore de {Rec} falhou: {Erro}", recId, e.Message);
+                return (503, new { error = "não consegui reconferir a árvore antes de aplicar (erro ao ler o banco). Nada foi alterado; tente de novo em instantes." });
             }
 
             /* ---- 0a½. a chave geral e a automação do cliente --------------------- */
@@ -323,7 +367,8 @@ public sealed class Executor(Db db, MetaEscrita meta, MetaGraph graph, Registro 
         catch (Exception e)
         {
             if (vaiEscrever) await registro.FecharAplicacaoAsync(recId, "falhou", new { ok = false, alterou = false, erro = "a decisão não foi gravada; nada foi enviado à Meta" });
-            return (500, new { error = e.Message });
+            log.LogError("a decisão de {Rec} não gravou: {Erro}", recId, e.Message);
+            return (500, new { error = "a decisão não foi gravada no banco: nada foi enviado à Meta. Tente de novo em instantes." });
         }
         await registro.TrilhaAsync(aceita ? "aceitou_recomendacao_motor" : "negou_recomendacao_motor", por, slug, "ok", null, null, null,
             new { via = "motor", recomendacao_id = recId, acao = rec.Acao, meta_id = rec.MetaId, motivo });
@@ -335,10 +380,17 @@ public sealed class Executor(Db db, MetaEscrita meta, MetaGraph graph, Registro 
         /* ---- 3. sem aceite, sem escrita: relê do banco ----------------------------- */
         RecomendacaoLida aceite;
         try { aceite = await registro.ExigirAceiteAsync(recId); }
-        catch (Exception e)
+        catch (SemAceite e)
         {
             await registro.FecharAplicacaoAsync(recId, "falhou", new { ok = false, alterou = false, erro = e.Message });
             return (409, new { error = e.Message });
+        }
+        catch (Exception e)
+        {
+            log.LogError("o aceite de {Rec} não foi relido: {Erro}", recId, e.Message);
+            const string erro = "não consegui reler o aceite no banco: nada foi enviado à Meta. Tente de novo em instantes.";
+            await registro.FecharAplicacaoAsync(recId, "falhou", new { ok = false, alterou = false, erro });
+            return (409, new { error = erro });
         }
 
         /* ---- 4. a escrita, pela única porta ----------------------------------------- */

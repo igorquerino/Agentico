@@ -103,14 +103,8 @@ public sealed class MetaGraph(IHttpClientFactory fabrica, IConfiguration cfg)
 
     /* ---- a resposta ---------------------------------------------------------------- */
 
-    static JsonElement Ler(string texto, int status)
-    {
-        JsonElement j;
-        try { j = JsonDocument.Parse(string.IsNullOrWhiteSpace(texto) ? "{}" : texto).RootElement.Clone(); }
-        catch { throw new ErroDaMeta($"a Meta respondeu algo que não é JSON ({status})."); }
-        if (j.ValueKind == JsonValueKind.Object && j.TryGetProperty("error", out var e)) throw ErroDaMeta.De(e);
-        return j;
-    }
+    /// <summary>A regra mora em GraphRegras.LerResposta: o `error` vira ErroDaMeta, e status fora de 2xx sem ele também.</summary>
+    static JsonElement Ler(string texto, int status) => GraphRegras.LerResposta(texto, status);
 
     public static string? S(JsonElement o, string n) => o.ValueKind == JsonValueKind.Object && o.TryGetProperty(n, out var v) ? v.ValueKind == JsonValueKind.String ? v.GetString() : v.ValueKind == JsonValueKind.Null ? null : v.GetRawText() : null;
 
