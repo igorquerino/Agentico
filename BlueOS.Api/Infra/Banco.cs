@@ -47,6 +47,8 @@ public interface IBanco
 public sealed class BancoNaoConfigurado(string msg) : InvalidOperationException(msg);
 
 public readonly record struct Jsonb(string Texto);
+/// <summary>Um fragmento de SQL que entra como está (coluna, subconsulta): nunca com texto vindo de fora.</summary>
+public readonly record struct Raw(string Texto);
 
 public static class Sql
 {
@@ -63,6 +65,7 @@ public static class Sql
         DateTime dt => $"'{(dt.Kind == DateTimeKind.Unspecified ? DateTime.SpecifyKind(dt, DateTimeKind.Local) : dt).ToUniversalTime():yyyy-MM-dd'T'HH:mm:ss.fff'Z'}'::timestamptz",
         Guid g => $"'{g}'::uuid",
         Jsonb j => "'" + j.Texto.Replace("'", "''") + "'::jsonb",
+        Raw r => r.Texto,
         string[] arr => arr.Length == 0 ? "'{}'::text[]" : "array[" + string.Join(",", arr.Select(x => Lit(x))) + "]::text[]",
         Guid[] arr => arr.Length == 0 ? "'{}'::uuid[]" : "array[" + string.Join(",", arr.Select(x => $"'{x}'")) + "]::uuid[]",
         IEnumerable<string> lista => Lit(lista.ToArray()),
@@ -242,14 +245,13 @@ public sealed class Db(IConfiguration cfg, IHttpClientFactory fabrica)
     IBanco? _banco;
     string? _assinatura;
 
-    public string Ref
+    public string Ref => RefDe(cfg["Supabase:Url"] ?? "");
+
+    /// <summary>O ref do projeto a partir da URL do Supabase (o primeiro rótulo do host).</summary>
+    public static string RefDe(string url)
     {
-        get
-        {
-            var url = cfg["Supabase:Url"] ?? "";
-            var host = Uri.TryCreate(url, UriKind.Absolute, out var u) ? u.Host : url;
-            return host.Split('.')[0];
-        }
+        var host = Uri.TryCreate(url, UriKind.Absolute, out var u) ? u.Host : url;
+        return host.Split('.')[0];
     }
 
     public string Transporte => Resolver().Banco?.Nome ?? "nenhum";

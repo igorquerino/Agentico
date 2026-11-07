@@ -92,7 +92,7 @@ public sealed class Meta(Db db, IHttpClientFactory fabrica, IConfiguration cfg)
         var candidatos = await TokensCandidatosAsync(c);
         if (candidatos.Count == 0) throw new InvalidOperationException($"sem token Meta gravado para nenhum squad: grave o token do squad {c.Squad} na etapa Assets.");
         /* o token de PÁGINA: só vem se a pessoa do token tem tarefa na página. Tenta o squad do cliente primeiro, depois os outros. */
-        string? tokenDaPagina = null; var tentativas = new List<string>();
+        string? tokenDaPagina = null; var semTarefa = new List<string>(); var outros = new List<string>();
         foreach (var (origem, token) in candidatos)
         {
             try
@@ -100,12 +100,20 @@ public sealed class Meta(Db db, IHttpClientFactory fabrica, IConfiguration cfg)
                 var pagina = await Get($"{c.Conta.PageId}?fields=id,name,access_token", token);
                 tokenDaPagina = pagina.TryGetProperty("access_token", out var pt) ? pt.GetString() : null;
                 if (!string.IsNullOrEmpty(tokenDaPagina)) break;
-                tentativas.Add($"{origem}: a Meta não devolveu token de página");
+                semTarefa.Add(origem);
             }
-            catch (InvalidOperationException e) { tentativas.Add($"{origem}: {e.Message}"); }
+            /* código 10 (ou 200) é "a pessoa deste token não tem tarefa na página": não é erro de token, é acesso que falta */
+            catch (InvalidOperationException e) when (e.Message.Contains("(código 10)") || e.Message.Contains("(código 200)")) { semTarefa.Add(origem); }
+            catch (InvalidOperationException e) { outros.Add($"{origem}: {e.Message}"); }
         }
         if (string.IsNullOrEmpty(tokenDaPagina))
-            throw new InvalidOperationException($"nenhum token gravado administra a página {c.Conta.PageId} ({string.Join("; ", tentativas)}). Peça acesso à página no Business Manager do cliente.");
+        {
+            var quem = semTarefa.Count > 0 ? $" Nenhuma das pessoas dos tokens gravados ({string.Join(", ", semTarefa)}) tem tarefa nessa página." : "";
+            var resto = outros.Count > 0 ? $" Outros tokens falharam por outro motivo: {string.Join("; ", outros.Take(2))}." : "";
+            throw new InvalidOperationException(
+                $"a página {c.Conta.PageId} não libera token de página para nenhum token gravado.{quem}{resto} " +
+                $"Peça ao cliente para dar acesso à página (tarefa de Anunciante ou Administrador) à pessoa do token do squad {c.Squad} no Business Manager, ou cadastre no Setup uma página que ela já administre, e busque de novo.");
+        }
         var forms = await Get($"{c.Conta.PageId}/leadgen_forms?fields=id,name,status,leads_count,created_time,questions{{key,label,type,options{{key,value}}}}&limit=100", tokenDaPagina);
         var saida = new List<FormularioDaMeta>();
         if (!forms.TryGetProperty("data", out var data) || data.ValueKind != JsonValueKind.Array) return saida;

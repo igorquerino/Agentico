@@ -1,25 +1,38 @@
-@* O painel do Start, dentro do card: confirma nicho, budget e a régua de MQL; escolhe o modo do agente;
-   confirma o automático; e dispara o condutor. Nada muda de tela. *@
-<div class="painel-start" @onclick:stopPropagation="true" @onkeydown:stopPropagation="true">
+@* O painel do Start (mock "Foco", quadro C): primeiro o que o condutor JÁ ACHOU (nicho, budget, formulário),
+   depois o que FALTA DE VOCÊ (teto, régua, modo). Confirma o automático; e dispara o condutor. Nada muda de tela. *@
+<div class="painel" @onclick:stopPropagation="true" @onkeydown:stopPropagation="true">
     @if (carregando)
     {
         <p class="text-3 mini">lendo a ficha e os formulários da página&hellip;</p>
     }
     else if (passo == 1)
     {
-        <h4>1 &middot; Confirme o que o agente vai usar</h4>
-        <label>Nicho <span class="text-3 mini">&middot; @sugestao?.OrigemDoNicho</span>
+        <h4>O condutor já achou <small>· confira e troque se quiser</small></h4>
+        <div class="ok-line"><span>Nicho <em>· @sugestao?.OrigemDoNicho</em></span>
             <select @bind="nicho">
                 <option value="">escolha&hellip;</option>
                 @foreach (var s in Nichos.Slugs) { <option value="@s">@Nichos.Rotulo(s)</option> }
             </select>
-        </label>
-        <div class="grade-2 compacta">
-            <label>Budget mensal de ads (R$) <span class="text-3 mini">&middot; @sugestao?.OrigemDoBudget</span><input type="number" min="0" step="100" @bind="budget" /></label>
-            <label>Teto por MQL (R$) <span class="text-3 mini">&middot; do PPL</span><input type="number" min="0" step="5" @bind="teto" /></label>
         </div>
-        <div class="regua-proposta">
-            <div><strong>Régua de MQL</strong> <span class="text-3 mini">&middot; @sugestao?.OrigemDaRegua</span></div>
+        <div class="ok-line"><span>Budget mensal de ads (R$) <em>· @sugestao?.OrigemDoBudget</em></span><input type="number" min="0" step="100" @bind="budget" /></div>
+        @if (sugestao?.Formulario is { } f)
+        {
+            <div class="ok-line"><span>Formulário da página</span><span><b>&ldquo;@f.Nome&rdquo;</b> <em>· @f.Perguntas.Count pergunta(s)</em></span></div>
+        }
+
+        <div class="need">
+            <div class="lab">Falta de você <small>@FaltaDeVoce</small></div>
+            <div class="gr2">
+                <label class="f">Teto por MQL (R$) <small>· o PPL</small><input type="number" min="0" step="5" @bind="teto" placeholder="ex.: 60" /></label>
+                <label class="f">Como o agente vai rodar
+                    <select @bind="modo">
+                        <option value="@ModoDeExecucao.Recomenda">Recomenda</option>
+                        <option value="@ModoDeExecucao.Sombra">Sombra</option>
+                        <option value="@ModoDeExecucao.Executa">Automático</option>
+                    </select>
+                </label>
+            </div>
+            <div class="q"><b class="t1">Régua de MQL</b> <span class="t3">· @sugestao?.OrigemDaRegua · clique na resposta para trocar</span></div>
             @if (regua is null)
             {
                 <p class="warn mini">@(avisoRegua ?? "sem régua: o Start para na ficha. Monte na etapa Ficha, aba Critério de MQL.")</p>
@@ -28,46 +41,37 @@
             {
                 @foreach (var q in regua.Perguntas)
                 {
-                    <div class="pergunta-chips">
-                        <span class="mini">@(string.IsNullOrWhiteSpace(q.Rotulo) ? q.Nome : q.Rotulo)</span>
-                        <div class="chips">
-                            @foreach (var o in OpcoesDe(q))
-                            {
-                                var cl = ClasseDe(q, o.Valor);
-                                <button type="button" class="chip chip-@cl" title="@Legenda(cl) · clique para trocar" @onclick="() => Ciclar(q, o.Valor)">@o.Rotulo</button>
-                            }
-                        </div>
+                    <div class="q">@(string.IsNullOrWhiteSpace(q.Rotulo) ? q.Nome : q.Rotulo)</div>
+                    <div class="chs">
+                        @foreach (var o in OpcoesDe(q))
+                        {
+                            var cl = ClasseDe(q, o.Valor);
+                            <button type="button" class="@cl" title="@Legenda(cl) · clique para trocar" @onclick="() => Ciclar(q, o.Valor)">@o.Rotulo</button>
+                        }
                     </div>
                 }
-                <p class="text-3 mini">verde = forte, azul = média, vermelho = eliminatória, cinza = ignorada. 2 fortes = MQL A, 1 = B. Clique na resposta para trocar.</p>
+                <div class="hint">verde = forte, azul = média, vermelho = eliminatória, riscada = ignorada · 2 fortes = MQL A, 1 = B</div>
             }
         </div>
+
+        <div class="pmodos">
+            <button type="button" class="@(modo == ModoDeExecucao.Recomenda ? "on" : "")" @onclick="() => modo = ModoDeExecucao.Recomenda"><b>Recomenda</b><span>recomenda e você aceita ou nega. Nada escreve sozinho.</span></button>
+            <button type="button" class="@(modo == ModoDeExecucao.Sombra ? "on" : "")" @onclick="() => modo = ModoDeExecucao.Sombra"><b>Sombra</b><span>registra o que faria, sem escrever na Meta.</span></button>
+            <button type="button" class="@(modo == ModoDeExecucao.Executa ? "on" : "")" @onclick="() => modo = ModoDeExecucao.Executa"><b>Automático</b><span>age sozinho pelas regras. Pede confirmação.</span></button>
+        </div>
         @if (erro is not null) { <p class="erro mini">@erro</p> }
-        <div class="acoes">
-            <button type="button" class="btn btn-ghost btn-mini" @onclick="Fechar">cancelar</button>
-            <button type="button" class="btn btn-destaque btn-mini" disabled="@(!Passo1Ok)" @onclick="() => passo = 2">continuar &rarr;</button>
-        </div>
-    }
-    else if (passo == 2)
-    {
-        <h4>2 &middot; Como o agente de tráfego vai rodar</h4>
-        <div class="modos">
-            <button type="button" class="modo @(modo == ModoDeExecucao.Recomenda ? "ativo" : "")" @onclick="() => modo = ModoDeExecucao.Recomenda"><strong>Recomenda</strong><span class="mini text-2">o motor recomenda e você aceita ou nega. Nada escreve sozinho.</span></button>
-            <button type="button" class="modo @(modo == ModoDeExecucao.Sombra ? "ativo" : "")" @onclick="() => modo = ModoDeExecucao.Sombra"><strong>Sombra</strong><span class="mini text-2">o motor registra o que faria, sem escrever na Meta. Para comparar.</span></button>
-            <button type="button" class="modo @(modo == ModoDeExecucao.Executa ? "ativo" : "")" @onclick="() => modo = ModoDeExecucao.Executa"><strong>Automático</strong><span class="mini text-2">o motor age sozinho pelas regras e pelo MQL do cliente. Pede confirmação.</span></button>
-        </div>
-        <div class="acoes">
-            <button type="button" class="btn btn-ghost btn-mini" @onclick="() => passo = 1">&larr; voltar</button>
-            <button type="button" class="btn btn-destaque btn-mini" @onclick="Avancar">@(modo == ModoDeExecucao.Executa ? "continuar →" : "▶ Start")</button>
+        <div class="act">
+            <button type="button" class="btn-g sm" @onclick="Fechar">cancelar</button>
+            <button type="button" class="btn-p big" disabled="@(!Passo1Ok)" @onclick="Avancar">@(modo == ModoDeExecucao.Executa ? "continuar →" : "▶ Start")</button>
         </div>
     }
     else
     {
-        <h4>3 &middot; Confirme o modo automático</h4>
-        <p class="warn mini">No modo automático o agente <strong>sobe criativo</strong>, <strong>duplica campanhas</strong>, <strong>troca criativos</strong> e <strong>pausa conjuntos</strong> sozinho, de acordo com as regras do vault e o MQL deste cliente. Você acompanha na etapa Automação e pode desligar lá ou pela chave geral.</p>
-        <div class="acoes">
-            <button type="button" class="btn btn-ghost btn-mini" @onclick="() => passo = 2">&larr; voltar</button>
-            <button type="button" class="btn btn-destaque btn-mini" @onclick="Iniciar">Confirmo &middot; &#9654; Start automático</button>
+        <h4>Confirme o modo automático</h4>
+        <p class="warn mini">No modo automático o agente <strong>sobe criativo</strong>, <strong>duplica campanhas</strong>, <strong>troca criativos</strong> e <strong>pausa conjuntos</strong> sozinho, de acordo com as regras da casa e o MQL deste cliente. Você acompanha na etapa Automação e pode desligar lá ou pela chave geral.</p>
+        <div class="act">
+            <button type="button" class="btn-g sm" @onclick="() => passo = 1">&larr; voltar</button>
+            <button type="button" class="btn-p big" @onclick="Iniciar">Confirmo &middot; &#9654; Start automático</button>
         </div>
     }
 </div>
@@ -85,8 +89,16 @@
     ReguaV2? regua;
     string? avisoRegua; string? erro;
     ModoDeExecucao modo = ModoDeExecucao.Recomenda;
-    /// <summary>As respostas de cada pergunta, como o formulário da Meta entrega (valor gravado, rótulo mostrado).</summary>
     readonly Dictionary<string, List<(string Valor, string Rotulo)>> opcoes = new();
+
+    string FaltaDeVoce
+    {
+        get
+        {
+            var n = (teto is > 0 ? 0 : 1) + (regua is { Perguntas.Count: > 0 } ? 0 : 1) + 1;
+            return n == 1 ? "só o modo" : $"{n}";
+        }
+    }
 
     protected override async Task OnInitializedAsync()
     {
@@ -105,7 +117,7 @@
                 var doForm = sugestao.Formulario?.Perguntas.FirstOrDefault(p => Regua.Normalizar(p.Chave) == Regua.Normalizar(q.Nome));
                 opcoes[q.Nome] = doForm is not null
                     ? doForm.Opcoes.Select(o => (string.IsNullOrWhiteSpace(o.Chave) ? o.Valor : o.Chave, o.Valor)).ToList()
-                    : q.Forte.Concat(q.Media).Concat(q.Elim).Select(v => (v, v.Replace('_', ' '))).ToList();   /* a régua guarda a chave; a tela mostra legível */
+                    : q.Forte.Concat(q.Media).Concat(q.Elim).Select(v => (v, v.Replace('_', ' '))).ToList();
             }
         modo = Cliente.Modo;
         carregando = false;
@@ -116,8 +128,8 @@
     List<(string Valor, string Rotulo)> OpcoesDe(PerguntaDaRegua q) => opcoes.GetValueOrDefault(q.Nome) ?? new();
 
     static bool Tem(List<string> l, string v) => l.Any(x => Regua.Normalizar(x) == Regua.Normalizar(v));
-    static string ClasseDe(PerguntaDaRegua q, string v) => Tem(q.Elim, v) ? "elim" : Tem(q.Forte, v) ? "forte" : Tem(q.Media, v) ? "media" : "ignorar";
-    static string Legenda(string cl) => cl switch { "forte" => "forte", "media" => "média", "elim" => "eliminatória", _ => "ignorada" };
+    static string ClasseDe(PerguntaDaRegua q, string v) => Tem(q.Elim, v) ? "el" : Tem(q.Forte, v) ? "fo" : Tem(q.Media, v) ? "me" : "ig";
+    static string Legenda(string cl) => cl switch { "fo" => "forte", "me" => "média", "el" => "eliminatória", _ => "ignorada" };
 
     /// <summary>forte → média → eliminatória → ignorada → forte.</summary>
     void Ciclar(PerguntaDaRegua q, string v)
@@ -126,12 +138,12 @@
         q.Forte.RemoveAll(x => Regua.Normalizar(x) == Regua.Normalizar(v));
         q.Media.RemoveAll(x => Regua.Normalizar(x) == Regua.Normalizar(v));
         q.Elim.RemoveAll(x => Regua.Normalizar(x) == Regua.Normalizar(v));
-        switch (atual) { case "forte": q.Media.Add(v); break; case "media": q.Elim.Add(v); break; case "elim": break; default: q.Forte.Add(v); break; }
+        switch (atual) { case "fo": q.Media.Add(v); break; case "me": q.Elim.Add(v); break; case "el": break; default: q.Forte.Add(v); break; }
     }
 
     async Task Avancar()
     {
-        if (modo == ModoDeExecucao.Executa) { passo = 3; return; }
+        if (modo == ModoDeExecucao.Executa) { passo = 2; return; }
         await Iniciar();
     }
 
@@ -140,6 +152,7 @@
         erro = null;
         if (regua is not null) regua.Perguntas.RemoveAll(q => q.Forte.Count + q.Media.Count + q.Elim.Count == 0);
         var plano = new PlanoDoStart(nicho, budget, regua, teto, modo);
+        try { await Api.RegistrarACaminhoAsync(Cliente.Slug, "Start disparado"); } catch { }
         await IniciarStart.InvokeAsync(new PedidoDeStart(Cliente, plano));
     }
 }

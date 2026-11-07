@@ -1,0 +1,96 @@
+@* A TRILHA VERTICAL do cliente (mock "Foco"): as etapas feitas dobram numa linha, a atual abre em checklist
+   com o que falta, as futuras mostram uma pista. Clicar numa etapa abre a etapa. O que falta no todo está
+   sempre visível à esquerda. *@
+<aside class="card trail" aria-label="A trilha do cliente">
+    <div class="lab">A trilha <small>@((int)Atual + 1) de 7@(Atual == Estagio.Automacao ? " · em automação" : "")</small></div>
+    @foreach (var d in Estagios.Lista)
+    {
+        var feita = d.Estagio < Atual;
+        var atual = d.Estagio == Atual;
+        var classe = feita ? "done" : atual ? "now" : "";
+        <div class="tr @classe @(d.Estagio == Aberta ? "open" : "")" role="button" tabindex="0" @onclick="() => Abrir.InvokeAsync(d.Estagio)" @onkeydown="k => Tecla(k, d.Estagio)" title="@d.Frase">
+            <span class="n">@(feita ? "✓" : ((int)d.Estagio + 1).ToString())</span>
+            @if (feita)
+            {
+                <b>@d.Curto<small>@Montador.ResumoDaEtapa(Cliente, d.Estagio)</small></b>
+            }
+            else if (atual)
+            {
+                <b>@d.Curto</b>
+                @if (Cliente.Automacao.EmCurso)
+                {
+                    <span class="f">&#8635; @Cliente.Automacao.Mensagem</span>
+                }
+                else
+                {
+                    var itens = Checklist(d.Estagio);
+                    @if (itens.Count > 0)
+                    {
+                        <ul>@foreach (var (rotulo, ok) in itens) { <li class="@(ok ? "ok" : "")">@rotulo</li> }</ul>
+                    }
+                    else { <span class="f">@Pista(d.Estagio)</span> }
+                }
+            }
+            else
+            {
+                <b>@d.Curto</b><span class="f @(Cliente.Sinais.PedidoDoCliente is not null && d.Estagio == Estagio.Automacao ? "" : "")">@Pista(d.Estagio)</span>
+            }
+        </div>
+    }
+</aside>
+
+@code {
+    [Parameter] public required Cliente Cliente { get; set; }
+    [Parameter] public required ParametrosMotor Parametros { get; set; }
+    /// <summary>O estágio em que o cliente está (o primeiro incompleto).</summary>
+    [Parameter] public Estagio Atual { get; set; }
+    /// <summary>A etapa aberta na tela.</summary>
+    [Parameter] public Estagio Aberta { get; set; }
+    [Parameter] public EventCallback<Estagio> Abrir { get; set; }
+
+    Task Tecla(KeyboardEventArgs k, Estagio e) => k.Key is "Enter" or " " ? Abrir.InvokeAsync(e) : Task.CompletedTask;
+
+    /// <summary>A checklist da etapa atual: cada item do que a etapa exige, feito ou não (as mesmas regras de Estagios).</summary>
+    List<(string Rotulo, bool Ok)> Checklist(Estagio e)
+    {
+        var c = Cliente;
+        switch (e)
+        {
+            case Estagio.Chegada:
+                return [("cadastrar os assets", false)];
+            case Estagio.Assets:
+                return [("logo principal", c.TemLogo), ("conta de anúncios", c.ContaConectada), ("página do Facebook", !string.IsNullOrWhiteSpace(c.Conta.PageId)), ("token do squad conferido", c.Conta.TokenValido == true)];
+            case Estagio.Ficha:
+                return [("nicho", Nichos.Valido(c.NichoSlug)), ("budget mensal", c.BudgetMensal is > 0), ("régua de MQL", c.Regua is { Perguntas.Count: > 0 }), ("teto por MQL", c.TetoMql is > 0)];
+            case Estagio.Copy:
+                var lista = new List<(string, bool)> { ("um lote gerado", c.Lotes.Count > 0) };
+                foreach (var et in Estagios.EtapasExigidas(c, Parametros)) lista.Add(($"peça aprovada de {et}", c.Pecas.Any(x => x.Etapa == et && x.Aprovada && x.CrivoOk)));
+                return lista;
+            case Estagio.Design:
+                var d = new List<(string, bool)> { ("artes geradas", c.Artes.Count > 0), ("uma arte aprovada", c.Artes.Any(a => a.Aprovada)) };
+                foreach (var a in Estagios.ValidarAssentos(c, Parametros)) d.Add(($"piloto de {a.Vaga}{(a.Arte is not null && !a.Ok ? " no assento certo" : "")}", a.Ok));
+                return d;
+            case Estagio.Campanha:
+                return [("estrutura montada", c.Publicacao is not null || (c.BudgetMensal is > 0)), ("publicada na Meta, pausada", Estagios.CampanhaPublicada(c))];
+            default:
+                var pend = c.Recomendacoes.Count(r => r.Estado == EstadoDaRecomendacao.Pendente);
+                return pend > 0 ? [($"{pend} decisão(ões) do agente esperando você", false)] : [];
+        }
+    }
+
+    /// <summary>A pista de uma etapa futura ou de uma atual sem checklist.</summary>
+    string Pista(Estagio e)
+    {
+        var c = Cliente;
+        return e switch
+        {
+            Estagio.Chegada => "chegou " + c.Desde.ToString("dd/MM"),
+            Estagio.Assets => c.Assets.Count == 0 && !c.ContaConectada ? "logo, conta e página" : Estagios.AssetsCompletos(c).Ok ? "completos" : "falta " + string.Join(", ", Estagios.AssetsCompletos(c).Pendencias),
+            Estagio.Ficha => Estagios.FichaCompleta(c).Ok ? Montador.ResumoDaEtapa(c, e) : (c.NichoSlug is null ? "" : Nichos.Rotulo(c.NichoSlug).ToLowerInvariant() + " ✓ · ") + "falta " + string.Join(", ", Estagios.FichaCompleta(c).Pendencias),
+            Estagio.Copy => c.Lotes.Count == 0 ? "nenhum lote" : Montador.ResumoDaEtapa(c, e),
+            Estagio.Design => c.Pilotos.Count == 0 ? "sem piloto" : Montador.ResumoDaEtapa(c, e),
+            Estagio.Campanha => Estagios.CampanhaPublicada(c) ? Montador.ResumoDaEtapa(c, e) : "não publicada",
+            _ => c.UltimaRodada is { } u ? $"última rodada {u:dd/MM HH:mm}" : Estagios.CampanhaPublicada(c) ? "em automação" : "não rodou",
+        };
+    }
+}

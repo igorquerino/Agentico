@@ -1,0 +1,109 @@
+@* O aprofundamento: por quê, o que aconteceu, o que custa, o que resolve. Preso à estrela clicada (o popover). *@
+@inject NavigationManager Nav
+
+<aside class="pop deep @Lado" style="@Estilo" role="dialog" aria-label="@Estrela.Nome" @onclick:stopPropagation="true">
+    <div class="who">
+        <span>@Estrela.Nome · @Estagios.Descricao(Estrela.Estagio).Curto.ToLowerInvariant()@(Estagios.CampanhaPublicada(Estrela.Cliente) ? $" · agente em {Condutor.Rotulo(Estrela.Cliente.Modo)}" : "")</span>
+        <button type="button" class="x" aria-label="fechar" @onclick="() => Fechar.InvokeAsync()">&#10005;</button>
+    </div>
+    @if (Estrela.Principal is { } a)
+    {
+        var d = Gravidades.De(a.Gravidade);
+        <span class="tag" style="background:@d.Cor">gravidade @((int)a.Gravidade) · @d.Rotulo</span>
+        <h2>@TituloComNegrito(a.Titulo)</h2>
+        <p class="since">@a.Motivo</p>
+        @if (a.LinhaDoTempo.Count > 0)
+        {
+            <ol class="tl">
+                @foreach (var m in a.LinhaDoTempo) { <li class="@(m.Hoje ? "hoje" : "")"><time>@m.Quando.ToString("dd/MM HH:mm")</time><span>@m.Texto</span></li> }
+            </ol>
+        }
+        <div class="two">
+            @if (a.OQueCusta is not null) { <div class="box cost"><b>O que isso custa</b>@a.OQueCusta @if (a.CustaDetalhe is not null) { <small>@a.CustaDetalhe</small> }</div> }
+            @if (a.OQueResolve is not null) { <div class="box fix"><b>O que resolve</b>@a.OQueResolve @if (a.QuemPode is not null) { <small>quem pode: @a.QuemPode</small> }</div> }
+        </div>
+        @if (Estrela.Alertas.Count > 1)
+        {
+            <ul class="mais">
+                @foreach (var o in Estrela.Alertas.Skip(1)) { <li><em class="num g@((int)o.Gravidade)" style="width:11px;height:11px;border-radius:3px;font-style:normal;font-size:8px;font-weight:800;color:var(--navy);display:grid;place-items:center;background:@Gravidades.De(o.Gravidade).Cor">@((int)o.Gravidade)</em>@o.Curto</li> }
+            </ul>
+        }
+        <div class="acts">
+            <button type="button" class="btn-p primary" @onclick="AbrirNoStart">Abrir no Start</button>
+            <button type="button" class="btn-p ghost" disabled="@marcando" @onclick="Marcar">@(Estrela.EstaVista ? "Desfazer o visto" : "Marcar como visto")</button>
+        </div>
+        <p class="hint">@(Estrela.EstaVista ? $"visto às {Estrela.Visto!.Em:HH:mm} · volta amanhã ou se o estado mudar" : "visto some até amanhã ou até o estado mudar")</p>
+        <div class="prize">quando resolver, @Estrela.Nome <b>acende verde</b> e volta pra borda · <b>+@Gravidades.Pontos(a.Gravidade) pts</b> pra quem resolveu</div>
+    }
+    else
+    {
+        var k = Estrela.Cliente.Sinais.Kpis;
+        <span class="tag aqua">em dia</span>
+        <h2>Tudo <b>em dia</b></h2>
+        <p class="since">@(Estrela.DecisoesPendentes > 0 ? $"{Estrela.DecisoesPendentes} decisão(ões) do agente esperando você." : "Nada esperando você.")</p>
+        <div class="nums">
+            <div>gasto do mês<b>@(k is null ? "—" : Dinheiro.ReaisCurto(k.GastoCentavos))</b><small class="text-3">@(k?.BudgetCentavos is { } b ? "de " + Dinheiro.ReaisCurto(b) : "")</small></div>
+            <div>MQL vs meta<b>@(k is null ? "—" : k.Mql)</b><small class="text-3">@(k?.MetaMql is { } m ? $"de {m}" : "")</small></div>
+            <div>R$ por MQL<b>@(k?.CustoPorMqlCentavos is { } c ? Dinheiro.ReaisRedondos(c) : "—")</b><small class="text-3">@(k?.TetoCentavos is { } t ? "teto " + Dinheiro.ReaisRedondos(t) : "")</small></div>
+            <div>nota do CS<b>@(Estrela.Cliente.Sinais.NotaCs?.ToString() ?? "—")</b><small class="text-3">@Estrela.Cliente.Sinais.FaixaCs.Replace('_', ' ')</small></div>
+        </div>
+        <div class="acts">
+            <button type="button" class="btn-p primary" @onclick="AbrirNoStart">Abrir no Start</button>
+        </div>
+    }
+</aside>
+
+@code {
+    [Parameter] public required Estrela Estrela { get; set; }
+    [Parameter] public required IBlueApi Api { get; set; }
+    [Parameter] public EventCallback Fechar { get; set; }
+    [Parameter] public EventCallback<string> Aviso { get; set; }
+    bool marcando;
+
+    /* Onde o popover abre: ao lado da estrela, do lado que tem espaço. As contas usam o tamanho real do mapa
+       pela variável --mapa, então valem em 1366 e em 1920. */
+    static readonly double[] Fator = [0, .193, .279, .364, .479];
+    double Rad => Estrela.Posicao.Angulo * Math.PI / 180;
+    double F => Fator[Estrela.Posicao.Anel] - (Estrela.Posicao.Volta > 0 ? .03 : 0);
+    string Lado => Math.Cos(Rad) > 0.15 ? "esq" : "dir";
+    string Estilo
+    {
+        get
+        {
+            var inv = System.Globalization.CultureInfo.InvariantCulture;
+            var cx = (Math.Cos(Rad) * F).ToString("0.000", inv);
+            var sy = (0.5 + Math.Sin(Rad) * F).ToString("0.000", inv);
+            var left = Lado == "dir" ? $"calc(50% + var(--mapa) * {cx} + 24px)" : $"calc(50% + var(--mapa) * {cx} - 384px)";
+            /* a altura estimada do popover decide até onde ele pode descer sem sair do mapa (e da janela) */
+            var alt = Estrela.Principal is null ? 340 : 660;
+            var cor = Estrela.Principal is { } a ? Gravidades.De(a.Gravidade).Cor + "40" : "rgba(0,222,185,.25)";
+            return $"left:{left};--sy:{sy};--alt:{alt}px;--pop-edge:{cor}";
+        }
+    }
+
+    static MarkupString TituloComNegrito(string t)
+    {
+        var i = t.LastIndexOf(' ');
+        var html = i < 0 ? $"<b>{System.Net.WebUtility.HtmlEncode(t)}</b>" : $"{System.Net.WebUtility.HtmlEncode(t[..i])} <b>{System.Net.WebUtility.HtmlEncode(t[(i + 1)..])}</b>";
+        return new MarkupString(html);
+    }
+
+    void AbrirNoStart()
+    {
+        var etapa = Estrela.Principal?.EtapaDoStart ?? Estrela.Estagio;
+        Nav.NavigateTo($"start?cliente={Uri.EscapeDataString(Estrela.Slug)}&etapa={etapa.ToString().ToLowerInvariant()}");
+    }
+
+    async Task Marcar()
+    {
+        if (Estrela.Principal is not { } a) return;
+        marcando = true;
+        try
+        {
+            var vai = !Estrela.EstaVista;
+            await Api.MarcarVistoAsync(Estrela.Slug, a.Assinatura, vai);
+            await Aviso.InvokeAsync(vai ? $"{Estrela.Nome} marcado como visto · volta amanhã ou se o estado mudar" : $"{Estrela.Nome} de volta ao mapa");
+        }
+        finally { marcando = false; }
+    }
+}

@@ -4,7 +4,7 @@
     <div class="caixa">
         <h3>Campanha publicada @(pub.Simulado ? "(Meta simulada)" : "") &middot; @pub.Em.ToString("dd/MM HH:mm")</h3>
         <p><strong>@pub.NomeDaCampanha</strong></p>
-        <p class="mini text-2">campanha @pub.CampanhaId &middot; formulário @pub.FormularioId &middot; @pub.Conjuntos.Count conjuntos &middot; @pub.Anuncios.Count anúncios &middot; <span class="pilula pilula-warn">tudo nasceu PAUSED</span></p>
+        <p class="mini text-2">@pub.Conjuntos.Count conjuntos &middot; @pub.Anuncios.Count anúncios &middot; <span class="pilula pilula-warn">tudo nasceu pausado</span></p>
         @if (pub.Link is not null) { <p><a href="@pub.Link" target="_blank" rel="noopener">Abrir no Gerenciador &nearr;</a></p> }
         <table class="tabela compacta">
             <thead><tr><th>Conjunto</th><th>Etapa</th><th>Público</th><th>R$/dia</th><th>adset_id</th></tr></thead>
@@ -31,7 +31,7 @@ else
 
     @if (estrutura is { } e)
     {
-        <div class="passo"><span class="num">2</span><div><h3>A estrutura aparece pronta</h3><p class="text-2">Calculada pelo budget e pelo nicho, já com os nomes que vão para a Meta (vault @e.VaultSha).</p></div></div>
+        <div class="passo"><span class="num">2</span><div><h3>A estrutura aparece pronta</h3><p class="text-2">Calculada pelo budget e pelo nicho, já com os nomes que vão para a Meta.</p></div></div>
         <div class="caixa">
             <div class="kpis">
                 <div class="kpi"><span class="rot">Faixa</span><strong>@e.FaixaRotulo</strong><span class="text-3 mini">@e.Rotulo</span></div>
@@ -52,8 +52,7 @@ else
             @foreach (var res in e.Reservado) { <p class="warn mini"><strong>Reservado @res.Etapa @Dinheiro.ReaisCurto(res.DiarioCentavos)/dia</strong> (@res.Chave): @res.Motivo</p> }
             @if (e.NaoAlocadoCentavos > 0) { <p class="text-3 mini">Sem destino: @Dinheiro.Reais(e.NaoAlocadoCentavos) por dia (arredondamento e teto de montagem).</p> }
             @foreach (var av in e.Avisos) { <p class="warn mini">@av</p> }
-            <p class="text-3 mini">Chaves do vault lidas: @string.Join(", ", e.ChavesUsadas).</p>
-        </div>
+            </div>
 
         <div class="passo"><span class="num">3</span><div><h3>Anúncio: os criativos piloto</h3><p class="text-2">Cada um dos @e.Conjuntos.Count conjuntos leva o piloto da etapa dele, escolhido no Design (1 anúncio por conjunto).</p></div></div>
         <div class="caixa">
@@ -87,13 +86,13 @@ else
                 @if (assentos.All(x => x.Ok)) { <p class="ok mini">cada conjunto vai rodar com o criativo gerado pela copy da etapa dele.</p> }
                 else { <p class="erro mini">o Publicar fica travado até cada vaga receber uma arte gerada pela copy da própria etapa.</p> }
             </div>
-            @if (!Api.EhDemo && Estagios.EtapasExigidas(Cliente, Api.Parametros).Count > 1)
+            @if (Api is V1Api && Estagios.EtapasExigidas(Cliente, Api.Parametros).Count > 1)
             {
-                <p class="warn mini">O Publicar do V1 sobe um criativo só (o de MOFU) para todos os conjuntos. Os outros pilotos ficam registrados aqui e entram pela troca de criativo, no Gerenciador ou pela árvore.</p>
+                <p class="warn mini">O Publicar do V1 sobe um criativo só (o de MOFU) para todos os conjuntos. Os outros pilotos ficam registrados aqui e entram pela troca de criativo, no Gerenciador ou pela árvore. Pela API .NET cada conjunto leva o piloto da etapa dele.</p>
             }
         </div>
 
-        <div class="passo"><span class="num">4</span><div><h3>Aplicar e publicar</h3><p class="text-2">Cria tudo na Meta, pausado: a campanha, o formulário da régua, os conjuntos e os anúncios. O sistema confere (validate_only) antes de cada escrita e mostra o link do Gerenciador.</p></div></div>
+        <div class="passo"><span class="num">4</span><div><h3>Aplicar e publicar</h3><p class="text-2">Cria tudo na Meta, pausado: a campanha, o formulário da régua, os conjuntos e os anúncios. O sistema confere com a Meta antes de cada escrita e mostra o link do Gerenciador.</p></div></div>
         <div class="caixa">
             <div class="grade-3">
                 <label>URL da política de privacidade<input @bind="politica" placeholder="https://" /></label>
@@ -103,7 +102,7 @@ else
             <p class="text-3 mini">Formulário da régua: nome, e-mail, telefone e cada pergunta da régua como múltipla escolha, com o nome de campo como chave. É isso que fecha o de-para da contagem de MQL. @(Cliente.Regua is null ? "Este cliente não tem régua: o Publicar vai recusar." : $"{Cliente.Regua.Perguntas.Count} pergunta(s) da régua.")</p>
             <div class="acoes">
                 <button type="button" class="btn btn-destaque btn-grande" @onclick="Publicar" disabled="@(ocupado || !Estagios.DesignPronto(Cliente, Api.Parametros).Ok)">@(ocupado ? "Publicando…" : "Publicar na Meta (pausado)")</button>
-                <span class="text-3 mini">publicar é de head pra cima; só em produção; idempotente pelo hash da estrutura (@e.Hash)</span>
+                <span class="text-3 mini">publicar é de head pra cima; fora da produção só com a conta de teste ou o squad liberado no MCP da Meta (Meta:Mcp:Squads na API); idempotente pelo hash da estrutura (@e.Hash)</span>
             </div>
             @if (resultado is { } r && !r.Ok) { <p class="erro" role="alert">[@r.Codigo] @r.Motivo</p> }
         </div>

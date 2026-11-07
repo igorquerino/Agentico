@@ -1,119 +1,179 @@
-@page "/"
+@page "/start"
 @inject FonteDeDados Fonte
 @inject NavigationManager Nav
 @implements IDisposable
 
-<PageTitle>Blue OS · Gestor de Tráfego</PageTitle>
+<PageTitle>Blue OS · Start</PageTitle>
 
+@* O START: a tela de trabalho por cliente. A carteira mostra SÓ quem precisa de ação (começar, terminar ou arrumar);
+   os em dia aparecem pela busca. Dentro do cliente: a faixa de comando com o alerta do Panorama, a trilha vertical à
+   esquerda e a etapa aberta à direita (mocks "Foco" e "Trilha" em _bmad-output/.../ux-start-cliente/mockups). *@
 @if (sel is null)
 {
-    <section class="cabecalho">
+    var acao = DoSquad.Select(VistaDe).Where(PrecisaDeAcao).ToList();
+    var emDia = DoSquad.Count - acao.Count;
+    <div class="phead">
         <div>
-            <h1>Carteira</h1>
-            <p class="text-2">Cada card diz em que estágio o cliente está. Abra um cliente e o fluxo segue na mesma tela, da chegada à automação.</p>
+            <h1>Start · <b>@acao.Count @(acao.Count == 1 ? "precisa" : "precisam") de você</b></h1>
+            <p>Começar, terminar ou arrumar. @(emDia > 0 ? $"Os {emDia} em dia não aparecem aqui: ache pela busca ou pelo Panorama." : "")</p>
         </div>
-        <div class="cabecalho-acoes">
-            <input class="busca" placeholder="Buscar cliente" @bind="busca" @bind:event="oninput" />
-            <button type="button" class="btn btn-destaque" @onclick="() => novo = true">+ Novo cliente</button>
+        <div class="chips">
+            <button type="button" class="chip @(trabalho is null ? "on" : "")" @onclick="() => trabalho = null">todos<b>@acao.Count</b></button>
+            @foreach (var t in new[] { Trabalho.Comecar, Trabalho.Terminar, Trabalho.Arrumar })
+            {
+                var n = acao.Count(x => x.Trabalho == t);
+                <button type="button" class="chip @(trabalho == t ? "on" : "")" @onclick="() => trabalho = t">@AcoesDoCard.RotuloDoTrabalho(t)<b>@n</b></button>
+            }
+            @if (SquadsDaCarteira.Count > 1)
+            {
+                <span class="sep">·</span>
+                @foreach (var s in SquadsDaCarteira) { <button type="button" class="chip @(squadFiltro == s ? "on" : "")" @onclick="() => EscolherSquad(squadFiltro == s ? null : s)">@s</button> }
+            }
         </div>
-    </section>
+        <input class="busca" placeholder="Buscar na carteira inteira" @bind="busca" @bind:event="oninput" />
+        <button type="button" class="btn-p" @onclick="() => novo = true">+ Novo cliente</button>
+    </div>
 
     @if (novo)
     {
-        <div class="caixa caixa-nova">
-            <label>Nome do cliente<input @bind="nomeNovo" placeholder="Como o cliente se chama" /></label>
-            <label>Squad<input @bind="squadNovo" /></label>
-            <div class="acoes">
-                <button type="button" class="btn btn-ghost" @onclick="() => novo = false">Cancelar</button>
-                <button type="button" class="btn btn-destaque" @onclick="CriarCliente" disabled="@string.IsNullOrWhiteSpace(nomeNovo)">Cadastrar e abrir</button>
+        <div class="card caixa-nova">
+            <label class="f">Nome do cliente<input @bind="nomeNovo" placeholder="Como o cliente se chama" /></label>
+            <label class="f">Squad<input @bind="squadNovo" /></label>
+            <div class="row">
+                <button type="button" class="btn-g" @onclick="() => novo = false">Cancelar</button>
+                <button type="button" class="btn-p" @onclick="CriarCliente" disabled="@string.IsNullOrWhiteSpace(nomeNovo)">Cadastrar e abrir</button>
             </div>
         </div>
     }
 
-    <div class="filtros" role="tablist" aria-label="Filtrar por squad" style="@(SquadsDaCarteira.Count > 1 ? null : "display:none")">
-        <span class="text-3 mini filtro-rotulo">squad</span>
-        <button type="button" class="chip @(squadFiltro is null ? "ativo" : "")" @onclick="() => EscolherSquad(null)">todos <b>@clientes.Count</b></button>
-        @foreach (var s in SquadsDaCarteira)
-        {
-            var n = clientes.Count(c => c.EstaNoSquad(s));
-            <button type="button" class="chip @(squadFiltro == s ? "ativo" : "")" @onclick="() => EscolherSquad(s)">@s <b>@n</b></button>
-        }
-    </div>
-    <div class="filtros" role="tablist" aria-label="Filtrar por estágio">
-        <button type="button" class="chip @(filtro is null ? "ativo" : "")" @onclick="() => filtro = null">todos <b>@DoSquad.Count</b></button>
-        @foreach (var d in Estagios.Lista)
-        {
-            var n = DoSquad.Count(c => EstagioDe(c) == d.Estagio);
-            <button type="button" class="chip @(filtro == d.Estagio ? "ativo" : "")" @onclick="() => filtro = d.Estagio">@d.Curto <b>@n</b></button>
-        }
-    </div>
-
     @if (erro is not null) { <p class="erro" role="alert">@erro</p> }
     @if (carregando) { <p class="text-3">Lendo a carteira…</p> }
-    else if (Filtrados.Count == 0) { <p class="text-3">Nenhum cliente neste recorte.</p> }
+    else if (Filtrados.Count == 0)
+    {
+        <div class="card vazio-start"><b>@(string.IsNullOrWhiteSpace(busca) ? "Ninguém precisa de ação agora." : "Nenhum cliente com esse nome.")</b><span class="text-3">@(string.IsNullOrWhiteSpace(busca) ? "Os clientes em dia estão na busca e no Panorama." : "A busca vale para a carteira inteira, inclusive os em dia.")</span></div>
+    }
 
-    <div class="grade-cartoes">
-        @foreach (var c in Filtrados)
+    <div class="grid">
+        @foreach (var v in Filtrados)
         {
-            <CartaoCliente @key="c.Slug" Cliente="c" Api="Api" Estagio="EstagioDe(c)" Pendencias="Estagios.PendenciasDoEstagio(c, Api.Parametros)" Abrir="Abrir" IniciarStart="IniciarStart" />
+            <CartaoCliente @key="v.Cliente.Slug" Cliente="v.Cliente" Api="Api" Estagio="v.Estagio" Pendencias="Estagios.PendenciasDoEstagio(v.Cliente, Api.Parametros)" Alertas="v.Alertas" DecisoesPendentes="v.Pendentes" Abrir="Abrir" AbrirEtapa="AbrirEm" IniciarStart="IniciarStart" />
         }
     </div>
 }
 else
 {
-    <section class="cliente-topo">
-        <button type="button" class="btn btn-ghost" @onclick="Fechar">&larr; Carteira</button>
-        <div class="cliente-topo-nome">
-            <h1>@sel.Nome</h1>
-            <div class="text-3">@sel.Squad &middot; @sel.Status.Replace('_', ' ') &middot; @(sel.NichoSlug is null ? "sem nicho" : Nichos.Rotulo(sel.NichoSlug)) &middot; @(sel.BudgetMensal is null ? "sem budget" : Dinheiro.ReaisCurto(Dinheiro.CentavosDe(sel.BudgetMensal.Value)) + "/mês")</div>
+    var vs = VistaDe(sel);
+    var principal = vs.Alertas.FirstOrDefault();
+    var acaoDoCliente = AcoesDoCard.De(sel, vs.Estagio, principal, vs.Pendentes);
+    <div class="ch">
+        <button type="button" class="btn-g sm" @onclick="Fechar">&larr; Carteira</button>
+        <div class="aura pequena @(Estagios.CampanhaPublicada(sel) || sel.Automacao.EmCurso ? "on" : "") @(sel.Automacao.EmCurso ? "rapida" : "") @(principal?.Gravidade == Gravidade.AutomacaoParou ? "parou" : "")">
+            <span class="clogo">
+                @if (sel.Assets.FirstOrDefault(x => x.Tipo == TipoDeAsset.LogoPrincipal && x.Url is not null) is { } logo) { <img src="@logo.Url" alt="" /> } else { <span>@Iniciais(sel.Nome)</span> }
+            </span>
         </div>
-        <span class="pilula pilula-estagio">@Estagios.Descricao(EstagioDe(sel)).Titulo</span>
-    </section>
+        <div>
+            <h1>@sel.Nome</h1>
+            <div class="cmeta"><b>@sel.Squad</b> · @sel.Status.Replace('_', ' ') · @(sel.NichoSlug is null ? "sem nicho" : Nichos.Rotulo(sel.NichoSlug)) · @(sel.BudgetMensal is > 0 ? Dinheiro.ReaisRedondos(Dinheiro.CentavosDe(sel.BudgetMensal.Value)) + "/mês" : "sem budget") · desde @sel.Desde.ToString("dd/MM")</div>
+        </div>
+        <div class="cact">
+            @if (sel.Automacao.EmCurso)
+            {
+                <span class="pill ok"><i></i>Start em curso · @sel.Automacao.Mensagem</span>
+            }
+            else if (Estagios.CampanhaPublicada(sel))
+            {
+                <div class="row"><span class="pill ok"><i></i>agente: @Condutor.Rotulo(sel.Modo)</span><button type="button" class="btn-g sm" @onclick="() => aba = Estagio.Automacao">mudar</button></div>
+                <span class="hint">@(sel.Modo == ModoDeExecucao.Recomenda ? "o motor recomenda e você aceita ou nega · nada escreve sozinho" : sel.Modo == ModoDeExecucao.Sombra ? "o motor registra o que faria, sem escrever na Meta" : "o motor escreve na Meta sozinho, pelas travas")</span>
+            }
+            else
+            {
+                <span class="hint">o condutor preenche o que consegue e para onde precisar de você</span>
+                <button type="button" class="btn-p big" @onclick="() => painelStart = !painelStart">&#9654; Start</button>
+            }
+        </div>
+    </div>
 
-    <Stepper Atual="EstagioDe(sel)" Aberta="aba" Abrir="e => aba = e" />
+    @if (painelStart && !sel.Automacao.EmCurso)
+    {
+        <div class="card painel-solto"><PainelStart Cliente="sel" Api="Api" IniciarStart="DispararDoCliente" Fechar="() => painelStart = false" /></div>
+    }
 
-    <section class="etapa">
-        <header class="etapa-cabecalho">
-            <h2>@Estagios.Descricao(aba).Titulo</h2>
-            <p class="text-2">@Estagios.Descricao(aba).Frase</p>
-        </header>
-        @if (erro is not null) { <p class="erro" role="alert">@erro</p> }
-        @if (abrindo)
-        {
-            <div class="caixa carregando" role="status">
-                <span class="spinner" aria-hidden="true"></span>
-                Lendo <strong>@sel.Nome</strong> na fonte de dados: ficha, card Tráfego, critério de MQL, assets, modo do motor, peças e recomendações&hellip;
+    @if (sel.Automacao.Parou)
+    {
+        <div class="strip" style="--c:var(--g4)">
+            <span class="tag g4"><span class="n">!</span>precisa de você</span>
+            <div><div class="what">O condutor parou: <b>@sel.Automacao.PrecisaDeVoce</b></div><div class="fix">@sel.Automacao.Mensagem</div></div>
+            <div class="do"><button type="button" class="btn-p" @onclick="() => aba = vs.Estagio">Resolver em @Estagios.Descricao(vs.Estagio).Curto</button></div>
+        </div>
+    }
+    else if (principal is { } a)
+    {
+        var d = Gravidades.De(a.Gravidade);
+        <div class="strip" style="--c:@d.Cor">
+            <span class="tag g@((int)a.Gravidade)"><span class="n">@((int)a.Gravidade)</span>@d.Rotulo</span>
+            <div>
+                <div class="what">@((MarkupString)Destaque(a.Titulo)) · <span class="t2">@a.Curto</span></div>
+                <div class="fix">@if (a.OQueResolve is not null) { <text>o que resolve: <b>@a.OQueResolve</b></text> }@if (vs.Alertas.Count > 1) { <text> · e mais @(vs.Alertas.Count - 1): @string.Join("; ", vs.Alertas.Skip(1).Select(x => x.Curto))</text> }</div>
             </div>
-        }
-        else
-        @switch (aba)
-        {
-            case Estagio.Chegada:
-                <div class="caixa">
-                    <p>O cliente chegou em <strong>@sel.Desde.ToString("dd/MM/yyyy")</strong>, no squad <strong>@sel.Squad</strong>. O fluxo começa pelos assets dele: a logo, as telas do produto, a conta de anúncios e a página. Depois a ficha, e então o agente de tráfego assume.</p>
-                    <button type="button" class="btn btn-destaque" @onclick="() => aba = Estagio.Assets">Cadastrar os assets &rarr;</button>
-                </div>
-                break;
-            case Estagio.Assets:
-                <EtapaAssets Cliente="sel" Api="Api" Avancar="() => aba = Estagio.Ficha" />
-                break;
-            case Estagio.Ficha:
-                <EtapaFicha Cliente="sel" Api="Api" Avancar="() => aba = Estagio.Copy" />
-                break;
-            case Estagio.Copy:
-                <EtapaCopy Cliente="sel" Api="Api" Avancar="() => aba = Estagio.Design" />
-                break;
-            case Estagio.Design:
-                <EtapaDesign Cliente="sel" Api="Api" Avancar="() => aba = Estagio.Campanha" />
-                break;
-            case Estagio.Campanha:
-                <EtapaCampanha Cliente="sel" Api="Api" Avancar="() => aba = Estagio.Automacao" />
-                break;
-            default:
-                <EtapaAutomacao Cliente="sel" Api="Api" />
-                break;
-        }
-    </section>
+            <div class="do"><button type="button" class="btn-p" @onclick="() => aba = acaoDoCliente.Etapa">@acaoDoCliente.Rotulo</button></div>
+        </div>
+    }
+
+    <div class="cl">
+        <Trilha Cliente="sel" Parametros="Api.Parametros" Atual="vs.Estagio" Aberta="aba" Abrir="e => aba = e" />
+
+        <section class="etapa">
+            <div class="ehead"><h2>@Estagios.Descricao(aba).Titulo</h2><p>@Estagios.Descricao(aba).Frase</p></div>
+            @if (erro is not null) { <p class="erro" role="alert">@erro</p> }
+            @if (abrindo)
+            {
+                <div class="card carregando" role="status"><span class="spinner" aria-hidden="true"></span>Lendo <strong>@sel.Nome</strong> na fonte de dados: ficha, card Tráfego, critério de MQL, assets, modo do motor, peças e recomendações&hellip;</div>
+            }
+            else
+            {
+                @if (aba is not Estagio.Assets and not Estagio.Automacao and not Estagio.Chegada && aba == vs.Estagio)
+                {
+                    var pend = Estagios.PendenciasDoEstagio(sel, Api.Parametros);
+                    @if (pend.Count > 0)
+                    {
+                        <div class="card falta">
+                            <div class="lab">Falta para sair de @Estagios.Descricao(aba).Curto <small>@pend.Count · o resto da etapa está abaixo</small></div>
+                            @for (var i = 0; i < pend.Count; i++) { <div class="fi"><span class="k">@(i + 1)</span><b>@Primeira(pend[i])</b><div class="why">@Porque(pend[i])</div></div> }
+                        </div>
+                        <div class="divider">o resto da etapa</div>
+                    }
+                }
+                @switch (aba)
+                {
+                    case Estagio.Chegada:
+                        <div class="card">
+                            <p>O cliente chegou em <strong>@sel.Desde.ToString("dd/MM/yyyy")</strong>, no squad <strong>@sel.Squad</strong>. O fluxo começa pelos assets dele: a logo, as telas do produto, a conta de anúncios e a página. Depois a ficha, e então o agente de tráfego assume. Ou dê o <strong>Start</strong>: o condutor preenche o que consegue.</p>
+                            <div class="row"><button type="button" class="btn-p" @onclick="() => aba = Estagio.Assets">Cadastrar os assets &rarr;</button></div>
+                        </div>
+                        break;
+                    case Estagio.Assets:
+                        <EtapaAssets Cliente="sel" Api="Api" Avancar="() => aba = Estagio.Ficha" />
+                        break;
+                    case Estagio.Ficha:
+                        <EtapaFicha Cliente="sel" Api="Api" Avancar="() => aba = Estagio.Copy" />
+                        break;
+                    case Estagio.Copy:
+                        <EtapaCopy Cliente="sel" Api="Api" Avancar="() => aba = Estagio.Design" />
+                        break;
+                    case Estagio.Design:
+                        <EtapaDesign Cliente="sel" Api="Api" Avancar="() => aba = Estagio.Campanha" />
+                        break;
+                    case Estagio.Campanha:
+                        <EtapaCampanha Cliente="sel" Api="Api" Avancar="() => aba = Estagio.Automacao" />
+                        break;
+                    default:
+                        <EtapaAutomacao Cliente="sel" Api="Api" />
+                        break;
+                }
+            }
+        </section>
+    </div>
 }
 
 @code {
@@ -121,33 +181,65 @@ else
     List<Cliente> clientes = new();
     Cliente? sel;
     Estagio aba;
-    Estagio? filtro;
+    Trabalho? trabalho;
     string busca = "";
     string? erro;
-    bool carregando;
-    bool novo;
+    bool carregando, novo, abrindo, painelStart;
     string nomeNovo = "";
     string squadNovo = "POSEIDON";
     IBlueApi? apiVista;
-
     string? squadFiltro;
 
-    List<string> SquadsDaCarteira => clientes
-        .SelectMany(c => c.Squads.Count > 0 ? c.Squads : [c.Squad])
-        .Select(s => s.ToUpperInvariant()).Distinct().OrderBy(s => s).ToList();
+    /// <summary>O que a carteira sabe de cada cliente: estágio, alertas (as regras do Panorama) e decisões pendentes.</summary>
+    sealed record Vista(Cliente Cliente, Estagio Estagio, List<Alerta> Alertas, int Pendentes, Trabalho Trabalho);
 
-    /// <summary>A carteira do squad escolhido. No piloto, POSEIDON: o único que o token da Meta alcança.</summary>
+    Vista VistaDe(Cliente c)
+    {
+        var e = Estagios.DoCliente(c, Api.Parametros);
+        var alertas = Diagnostico.DoCliente(c, Api.Parametros, DateTime.Now);
+        var pend = c.Recomendacoes.Count(r => r.Estado == EstadoDaRecomendacao.Pendente);
+        return new(c, e, alertas, pend, AcoesDoCard.TrabalhoDe(c, e));
+    }
+
+    static bool PrecisaDeAcao(Vista v) => v.Alertas.Count > 0 || v.Pendentes > 0 || v.Cliente.Automacao.EmCurso || v.Cliente.Automacao.Parou;
+
+    List<string> SquadsDaCarteira => clientes.SelectMany(c => c.Squads.Count > 0 ? c.Squads : [c.Squad]).Select(s => s.ToUpperInvariant()).Distinct().OrderBy(s => s).ToList();
     List<Cliente> DoSquad => squadFiltro is null ? clientes : clientes.Where(c => c.EstaNoSquad(squadFiltro)).ToList();
-
     void EscolherSquad(string? s) { squadFiltro = s; Fonte.GravarSquadPadrao(s); }
 
-    List<Cliente> Filtrados => DoSquad
-        .Where(c => filtro is null || EstagioDe(c) == filtro)
-        .Where(c => string.IsNullOrWhiteSpace(busca) || c.Nome.Contains(busca, StringComparison.OrdinalIgnoreCase) || c.Slug.Contains(busca, StringComparison.OrdinalIgnoreCase))
-        .OrderBy(c => (int)EstagioDe(c)).ThenBy(c => c.Nome)
-        .ToList();
+    /// <summary>Sem busca: só quem precisa de ação, por gravidade e nome. Com busca: a carteira inteira, inclusive os em dia.</summary>
+    List<Vista> Filtrados
+    {
+        get
+        {
+            var vistas = DoSquad.Select(VistaDe);
+            if (!string.IsNullOrWhiteSpace(busca))
+                return vistas.Where(v => v.Cliente.Nome.Contains(busca, StringComparison.OrdinalIgnoreCase) || v.Cliente.Slug.Contains(busca, StringComparison.OrdinalIgnoreCase)).OrderBy(v => v.Cliente.Nome).ToList();
+            return vistas.Where(PrecisaDeAcao).Where(v => trabalho is null || v.Trabalho == trabalho)
+                .OrderBy(v => v.Alertas.Count > 0 ? (int)v.Alertas[0].Gravidade : 9).ThenBy(v => v.Cliente.Nome).ToList();
+        }
+    }
 
-    Estagio EstagioDe(Cliente c) => Estagios.DoCliente(c, Api.Parametros);
+    static string Iniciais(string nome) => string.Concat(nome.Split(' ', StringSplitOptions.RemoveEmptyEntries).Take(2).Select(p => char.ToUpperInvariant(p[0])));
+    static string Primeira(string s) => s.Length == 0 ? s : char.ToUpperInvariant(s[0]) + s[1..];
+    static string Destaque(string t) { var i = t.LastIndexOf(' '); return i < 0 ? $"<b>{System.Net.WebUtility.HtmlEncode(t)}</b>" : $"{System.Net.WebUtility.HtmlEncode(t[..i])} <b>{System.Net.WebUtility.HtmlEncode(t[(i + 1)..])}</b>"; }
+
+    /// <summary>O porquê de cada pendência, em linguagem de gente.</summary>
+    static string Porque(string pend) => pend switch
+    {
+        "nicho" => "a copy e a estrutura saem do nicho",
+        "budget mensal" => "define a faixa: quantas etapas do funil e quantos conjuntos",
+        "régua de MQL" => "sem régua o agente não sabe o que é um lead bom",
+        "teto por MQL" => "o teto é a régua do dinheiro: alerta, pausa e escala saem dele",
+        "nenhum lote gerado" => "o agente escreve as peças das etapas que a faixa pede",
+        "nenhuma arte gerada" => "as artes saem das peças aprovadas",
+        "nenhuma arte aprovada" => "aprove ao menos uma arte por etapa",
+        "publicar a estrutura na Meta" => "tudo nasce pausado; você ativa no Gerenciador",
+        _ when pend.StartsWith("peça aprovada") => "uma peça aprovada por etapa do funil",
+        _ when pend.StartsWith("criativo piloto") => "cada conjunto leva o piloto da etapa dele",
+        _ when pend.StartsWith("piloto de") => "a arte da vaga tem de nascer da copy daquela etapa",
+        _ => "",
+    };
 
     protected override async Task OnInitializedAsync()
     {
@@ -155,8 +247,7 @@ else
         try { await Fonte.AutoConectarAsync(); }
         catch (Exception e) { erro = $"conexão automática ao V1 falhou: {e.Message}"; }
         await Carregar();
-        /* Deep link, como o `?agente=lp&cliente=<slug>` do V1: /?cliente=<slug>&etapa=automacao
-           abre direto no cliente e na etapa (o sino do OS e o chat podem mandar gente para cá). */
+        /* Deep link: /start?cliente=<slug>&etapa=automacao abre direto no cliente e na etapa (o Panorama manda gente para cá). */
         var q = System.Web.HttpUtility.ParseQueryString(new Uri(Nav.Uri).Query);
         var slug = q["cliente"];
         if (!string.IsNullOrWhiteSpace(slug) && clientes.FirstOrDefault(c => c.Slug == slug) is { } alvo)
@@ -172,7 +263,6 @@ else
         try { clientes = (await Api.ListarClientesAsync()).ToList(); apiVista = Api; }
         catch (Exception e) { erro = e.Message; clientes = new(); }
         finally { carregando = false; }
-        /* O squad padrão da configuração só vale quando existe na carteira lida; senão, todos. */
         var padrao = Fonte.Config.SquadPadrao;
         squadFiltro = padrao is not null && clientes.Any(c => c.EstaNoSquad(padrao)) ? padrao : null;
     }
@@ -183,29 +273,29 @@ else
         StateHasChanged();
     });
 
-    bool abrindo;
-
     async Task Abrir(Cliente c)
     {
         if (abrindo) return;
-        erro = null;
-        /* O cliente aparece NA HORA: no V1 a hidratação são sete leituras e, sem isto, o
-           clique parecia morto por 10 s ou mais (e por 5 min com o dev server travado). */
+        erro = null; painelStart = false;
         sel = c;
-        aba = EstagioDe(c);
+        aba = Estagios.DoCliente(c, Api.Parametros);
         abrindo = true;
         StateHasChanged();
         try { sel = await Api.ObterClienteAsync(c.Slug) ?? c; }
         catch (Exception e) { erro = $"não consegui ler o cliente na fonte ({Api.Origem}): {e.Message}"; }
         finally { abrindo = false; }
-        aba = EstagioDe(sel);
+        aba = Estagios.DoCliente(sel, Api.Parametros);
     }
 
-    void Fechar() { sel = null; erro = null; }
+    async Task AbrirEm((Cliente Cliente, Estagio Etapa) pedido)
+    {
+        await Abrir(pedido.Cliente);
+        aba = pedido.Etapa;
+    }
 
-    /* ---- o Start automático, a partir do card ------------------------------------
-       O condutor roda em segundo plano e avisa a cada passo; a carteira troca a
-       instância do cliente pela lida inteira (ficha, lotes, artes) e redesenha. */
+    void Fechar() { sel = null; erro = null; painelStart = false; }
+
+    /* O Start automático: o condutor roda em segundo plano e avisa a cada passo; a trilha acende etapa por etapa. */
     Task IniciarStart(PedidoDeStart pedido)
     {
         erro = null;
@@ -214,11 +304,17 @@ else
         return Task.CompletedTask;
     }
 
+    Task DispararDoCliente(PedidoDeStart pedido) { painelStart = false; return IniciarStart(pedido); }
+
     void Trocar(Cliente atual)
     {
         var i = clientes.FindIndex(x => x.Slug == atual.Slug);
         if (i >= 0 && !ReferenceEquals(clientes[i], atual)) clientes[i] = atual;
-        if (sel is not null && sel.Slug == atual.Slug && !ReferenceEquals(sel, atual)) sel = atual;
+        if (sel is not null && sel.Slug == atual.Slug)
+        {
+            if (!ReferenceEquals(sel, atual)) sel = atual;
+            aba = Estagios.DoCliente(sel, Api.Parametros);
+        }
     }
 
     async Task CriarCliente()

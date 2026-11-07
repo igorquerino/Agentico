@@ -16,8 +16,7 @@ namespace BlueOS.Api.Dominio;
    · ICP         → cliente_icp (perfil) + cliente_icp_segmento (recorte principal)
    · produto     → cliente_produto;  estratégia → cliente_estrategia
    · modo        → trafego_contas.motor_modo;  chave geral → trafego_motor_chave_geral
-   · decisão     → trafego_motor_decisao (append-only; o aceite que escreve na Meta
-                   continua pelo V1 até o executor existir aqui)
+   · decisão     → Dominio/Executor.cs (o aceite aplica na Meta pelo executor)
    Cada escrita é um lote numa transação: um round-trip em qualquer transporte.
    ============================================================================ */
 public sealed record ResultadoDaEscrita(bool Ok, string? Erro = null, int Status = 400);
@@ -153,24 +152,6 @@ public sealed class Escritas(Db db)
             insert into public.trafego_motor_chave_geral (id, ligada, motivo, por, mudado_em) values (1, {ligada}, {(ligada ? null : motivo?.Trim())}, {esc.UserId}, now())
             on conflict (id) do update set ligada = excluded.ligada, motivo = excluded.motivo, por = excluded.por, mudado_em = now()
             """)]);
-        return Feito;
-    }
-
-    /// <summary>Negar, ou aceitar o que não escreve na Meta. O aceite de PAUSAR e DUPLICAR passa pelo V1 (executor).</summary>
-    public async Task<ResultadoDaEscrita> DecidirAsync(EscopoDaSessao esc, string slug, string recomendacaoId, bool aceita, string? motivo)
-    {
-        if (!aceita && string.IsNullOrWhiteSpace(motivo)) return new(false, "negar pede motivo: é o que diz ao motor onde ele errou.");
-        if (!Guid.TryParse(recomendacaoId, out var rid)) return new(false, "recomendação não encontrada", 404);
-        var rec = await db.UmAsync(Sql.Fmt($"""
-            select r.acao, (select d.decisao from public.trafego_motor_decisao d where d.recomendacao_id = r.id order by d.em desc limit 1) as ultima
-            from public.trafego_motor_recomendacao r where r.id = {rid} and r.cliente_slug = {slug}
-            """), r => new { Acao = r.S("acao") ?? "", Ultima = r.S("ultima") });
-        if (rec is null) return new(false, "recomendação não encontrada", 404);
-        if (rec.Ultima is "aplicada" or "incerto") return new(false, "esta recomendação já mexeu na conta: negar não desfaz. Desfazer é no Gerenciador.", 409);
-        if (aceita && Enum.TryParse<Acao>(rec.Acao, out var a) && Arvore.Escreve(a))
-            return new(false, "aceitar uma ação que escreve na Meta ainda passa pelo V1 (o executor não foi portado): o app faz isso pela fonte V1.", 409);
-        if (aceita && !esc.PodeAplicarNaMeta) return new(false, "aceitar recomendação do motor é de head ou acima. Negar você pode.", 403);
-        await db.ExecutarLoteAsync([Sql.Fmt($"insert into public.trafego_motor_decisao (recomendacao_id, decisao, por, motivo) values ({rid}, {(aceita ? "aceita" : "negada")}, {Guid.Parse(esc.UserId)}, {motivo?.Trim()})")]);
         return Feito;
     }
 

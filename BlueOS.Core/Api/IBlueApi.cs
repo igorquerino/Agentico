@@ -75,6 +75,16 @@ public interface IBlueApi
     Task<(bool Ligada, string? Motivo)> ChaveGeralAsync();
     Task MudarChaveGeralAsync(bool ligada, string? motivo);
 
+    /* ---- panorama (o mapa estelar do squad) ---------------------------------- */
+    /// <summary>A carteira do squad como o Panorama mostra: estrelas com o alerta mais grave, o resumo do squad, os
+    /// sinais de vida e o placar. Null em `squad` = o squad padrão (o primeiro da carteira).</summary>
+    Task<BlueOS.Core.Panorama.PanoramaDoSquad> LerPanoramaAsync(string? squad);
+    /// <summary>Marcar como visto: silencia o alerta até amanhã ou até a assinatura do estado mudar. `visto=false` desfaz.</summary>
+    Task MarcarVistoAsync(string clienteSlug, string assinatura, bool visto);
+    /// <summary>O gestor agiu no Start (aceitou/negou decisão, conferiu token, conectou conta, deu Start): os pontos ficam "a caminho"
+    /// no Panorama até a estrela acender de fato.</summary>
+    Task RegistrarACaminhoAsync(string clienteSlug, string acao);
+
     /// <summary>Só na demonstração: ativa a campanha e gera N dias de veiculação para o Ongoing ter o que ler.</summary>
     bool PodeSimularVeiculacao { get; }
     Task SimularVeiculacaoAsync(Cliente c, int dias);

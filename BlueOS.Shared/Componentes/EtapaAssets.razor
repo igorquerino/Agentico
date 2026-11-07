@@ -1,80 +1,106 @@
-@* Assets do cliente: marca (bucket brand-assets), conta de anúncios, página, token do squad. *@
-<div class="grade-2">
-    <div class="caixa">
-        <h3>Marca &amp; telas</h3>
-        <p class="text-3 mini">Imagem, PDF ou texto até 10 MB. Subir o mesmo arquivo no mesmo campo substitui; o tipo faz parte da identidade do asset (migration 0057).</p>
-        @foreach (var tipo in new[] { TipoDeAsset.LogoPrincipal, TipoDeAsset.LogoVariacao, TipoDeAsset.Tela })
+@* Assets do cliente (mock "Foco"): primeiro o bloco FALTA, com cada pendência já como ação (conta, página, token,
+   logo); depois "o resto da etapa": marca & telas e o que o Start precisa saber. *@
+@{
+    var faltaConta = !Cliente.ContaConectada;
+    var faltaPagina = string.IsNullOrWhiteSpace(Cliente.Conta.PageId);
+    var faltaToken = Cliente.Conta.TokenValido != true;
+    var faltaLogo = !Cliente.TemLogo;
+    var total = (faltaConta ? 1 : 0) + (faltaPagina ? 1 : 0) + (faltaToken ? 1 : 0) + (faltaLogo ? 1 : 0);
+    var k = 0;
+}
+@if (total > 0)
+{
+    <div class="card falta">
+        <div class="lab">Falta para sair de Assets <small>@total de @total · o resto da etapa está abaixo</small></div>
+        @if (faltaLogo)
         {
-            var dos = Cliente.Assets.Where(a => a.Tipo == tipo).ToList();
-            <div class="campo-asset">
-                <div class="campo-asset-cab">
-                    <strong>@Asset.RotuloDoTipo(tipo)</strong>
-                    <label class="btn btn-ghost btn-mini">
-                        @(dos.Count == 0 ? "Subir" : "Subir outro")
-                        <InputFile OnChange="e => Subir(e, tipo)" accept="image/*,.pdf,.txt,.md" multiple="@(tipo == TipoDeAsset.Tela)" style="display:none" />
-                    </label>
-                </div>
-                @if (dos.Count == 0) { <p class="text-3 mini">nenhum arquivo</p> }
-                <ul class="lista-assets">
-                    @foreach (var a in dos)
-                    {
-                        <li>
-                            @if (a.Url is not null && a.Mime.StartsWith("image/")) { <img src="@a.Url" alt="" /> } else { <span class="thumb-vazia">@a.Mime.Split('/').Last()</span> }
-                            <span class="nome">@a.Nome</span>
-                            <span class="text-3 mini">@((a.TamanhoBytes / 1024.0).ToString("0")) KB</span>
-                            <button type="button" class="btn btn-ghost btn-mini" @onclick="() => Remover(a)" title="Remover">&#10006;</button>
-                        </li>
-                    }
-                </ul>
+            <div class="fi">
+                <span class="k">@(++k)</span><b>Logo principal</b>
+                <div class="why">a arte e o anúncio levam a logo do cliente</div>
+                <div class="act"><label class="btn-p sm">Subir a logo<InputFile OnChange="e => Subir(e, TipoDeAsset.LogoPrincipal)" accept="image/*,.pdf" style="display:none" /></label></div>
+            </div>
+        }
+        @if (faltaConta)
+        {
+            <div class="fi">
+                <span class="k">@(++k)</span><b>Conta de anúncios</b>
+                <div class="why">sem conta vinculada · o Start precisa dela para montar a estrutura</div>
+                <div class="fields one"><label class="f">ID da conta de anúncios<input @bind="adAccount" placeholder="só o número depois de act_" /></label></div>
+                <div class="act"><button type="button" class="btn-p" @onclick="Conectar" disabled="@ocupado">Conectar conta</button></div>
+            </div>
+        }
+        @if (faltaPagina)
+        {
+            <div class="fi">
+                <span class="k">@(++k)</span><b>Página do Facebook</b>
+                <div class="why">a página assina o anúncio de cadastro</div>
+                <div class="fields"><label class="f">ID da página<input @bind="pageId" /></label><label class="f">Nome da página<input @bind="pageNome" /></label></div>
+                <div class="act">@if (faltaConta) { <span class="hint">conecta junto com a conta</span> } else { <button type="button" class="btn-p sm" @onclick="Conectar" disabled="@ocupado">Gravar a página</button> }</div>
+            </div>
+        }
+        @if (faltaToken)
+        {
+            <div class="fi">
+                <span class="k">@(++k)</span><b>Token do squad @Cliente.Squad</b>
+                <div class="why">@(Cliente.Conta.TokenValido == false ? $"a Meta recusou: {Cliente.Conta.TokenMotivo}" : "não conferido") · a conferência pergunta à Meta; vale para todos os clientes do squad</div>
+                <div class="fields one"><label class="f">Trocar o token (se a Meta recusar)<input type="password" @bind="tokenNovo" placeholder="cole o access token inteiro" autocomplete="off" /></label></div>
+                <div class="act"><button type="button" class="btn-g" @onclick="Conferir" disabled="@ocupado">Conferir token</button><button type="button" class="btn-g sm" @onclick="GravarToken" disabled="@(ocupado || string.IsNullOrWhiteSpace(tokenNovo))">Gravar no squad</button></div>
             </div>
         }
     </div>
+    <div class="divider">o resto da etapa</div>
+}
 
-    <div class="caixa">
-        <h3>Conta de anúncios &amp; página</h3>
-        <label>ID da conta de anúncios<input @bind="adAccount" placeholder="só o número depois de act_" /></label>
-        <label>ID da página do Facebook<input @bind="pageId" placeholder="o anúncio de cadastro é assinado pela página" /></label>
-        <label>Nome da página<input @bind="pageNome" /></label>
-        <div class="acoes">
-            <button type="button" class="btn btn-destaque" @onclick="Conectar" disabled="@ocupado">Conectar conta</button>
-            @if (Cliente.ContaConectada) { <button type="button" class="btn btn-ghost" @onclick="Desconectar" disabled="@ocupado">Desconectar</button> }
-        </div>
-        <p class="mini @(Cliente.ContaConectada ? "ok" : "warn")">@(Cliente.ContaConectada ? $"conectada: {Cliente.Conta.ActId}" : "sem conta de anúncios vinculada")</p>
-
-        <h3 class="mt">Token Meta do squad @Cliente.Squad</h3>
-        <p class="text-3 mini">A credencial é do squad (System User), gravada no setup do V1. Existir não é funcionar: a conferência pergunta à Meta (/me).</p>
-        <div class="acoes">
-            <button type="button" class="btn btn-ghost" @onclick="Conferir" disabled="@ocupado">Conferir token</button>
-            <span class="pilula @(Cliente.Conta.TokenValido == true ? "pilula-ok" : Cliente.Conta.TokenValido == false ? "pilula-err" : "")">
-                @(Cliente.Conta.TokenValido == true ? "a Meta aceitou o token" : Cliente.Conta.TokenValido == false ? "a Meta recusou: " + Cliente.Conta.TokenMotivo : "não conferido")
-            </span>
-        </div>
-        <label>Trocar o token do squad (cole o access token inteiro)
-            <input type="password" @bind="tokenNovo" placeholder="EAA…" autocomplete="off" />
-        </label>
-        <div class="acoes">
-            <button type="button" class="btn btn-ghost" @onclick="GravarToken" disabled="@(ocupado || string.IsNullOrWhiteSpace(tokenNovo))">Gravar token no squad @Cliente.Squad</button>
-            <span class="text-3 mini">vale para todos os clientes do squad; a fonte confere com a Meta antes de gravar; o app não guarda o token</span>
-        </div>
-
-        <h3 class="mt">O que o Start precisa saber</h3>
-        <label class="opcao"><input type="checkbox" @bind="Cliente.Conta.TemLista" /> o cliente subiu lista de clientes ou leads (público personalizado do BOFU)</label>
-        <label class="opcao"><input type="checkbox" @bind="Cliente.Conta.TemSiteOuTag" /> tem site com pixel ou tag (público de site no TOFU)</label>
-        <label>URL da política de privacidade<input @bind="Cliente.Conta.PoliticaUrl" placeholder="https://" /></label>
-        <label>Link do anúncio (site do cliente)<input @bind="Cliente.Conta.Link" placeholder="https://" /></label>
-        <div class="acoes">
-            <button type="button" class="btn btn-ghost" @onclick="SalvarConta" disabled="@ocupado">Salvar</button>
-            @if (salvo) { <span class="ok mini">salvo</span> }
-        </div>
+<div class="g2c">
+    <div class="card">
+        <div class="lab">Marca &amp; telas <small>imagem, PDF ou texto até 10 MB</small></div>
+        @foreach (var tipo in new[] { TipoDeAsset.LogoPrincipal, TipoDeAsset.LogoVariacao, TipoDeAsset.Tela })
+        {
+            var dos = Cliente.Assets.Where(a => a.Tipo == tipo).ToList();
+            <div class="asset">
+                <div>
+                    <b>@Asset.RotuloDoTipo(tipo)@(tipo == TipoDeAsset.Tela ? "s" : "")</b>
+                    @if (dos.Count == 0) { <div class="none">nenhum arquivo@(tipo == TipoDeAsset.Tela ? " · pode subir várias" : "")</div> }
+                    @foreach (var a in dos)
+                    {
+                        <div class="file">
+                            @if (a.Url is not null && a.Mime.StartsWith("image/")) { <img class="th" src="@a.Url" alt="" /> } else { <i class="th">@a.Mime.Split('/').Last()</i> }
+                            @a.Nome <small>@((a.TamanhoBytes / 1024.0).ToString("0")) KB</small>
+                            <button type="button" class="x" @onclick="() => Remover(a)" title="Remover">&#10006;</button>
+                        </div>
+                    }
+                </div>
+                <label class="btn-g sm">@(dos.Count == 0 ? "Subir" : "Subir outro")<InputFile OnChange="e => Subir(e, tipo)" accept="image/*,.pdf,.txt,.md" multiple="@(tipo == TipoDeAsset.Tela)" style="display:none" /></label>
+            </div>
+        }
+    </div>
+    <div class="card">
+        <div class="lab">Conta &amp; o que o Start precisa saber</div>
+        @if (Cliente.ContaConectada)
+        {
+            <div class="ok-line"><span>Conta de anúncios</span><span><b>@Cliente.Conta.ActId</b> <em>· conectada</em></span></div>
+            <div class="ok-line"><span>Página</span><span><b>@(string.IsNullOrWhiteSpace(Cliente.Conta.PageNome) ? Cliente.Conta.PageId : Cliente.Conta.PageNome)</b></span></div>
+            <div class="row"><button type="button" class="btn-g sm" @onclick="Desconectar" disabled="@ocupado">Desconectar a conta</button></div>
+        }
+        @if (Cliente.Conta.TokenValido == true)
+        {
+            <div class="ok-line"><span>Token do squad @Cliente.Squad</span><span><b>a Meta aceitou</b> <em>· @(Cliente.Conta.TokenConferidoEm is { } t ? $"conferido {t:dd/MM HH:mm}" : "")</em></span></div>
+            <div class="row"><button type="button" class="btn-g sm" @onclick="Conferir" disabled="@ocupado">Conferir de novo</button></div>
+        }
+        <label class="ck"><input type="checkbox" @bind="Cliente.Conta.TemLista" /> o cliente subiu lista de clientes ou leads</label>
+        <label class="ck"><input type="checkbox" @bind="Cliente.Conta.TemSiteOuTag" /> tem site com pixel ou tag</label>
+        <label class="f" style="margin-top:10px">URL da política de privacidade<input @bind="Cliente.Conta.PoliticaUrl" placeholder="https://" /></label>
+        <label class="f">Link do anúncio (site do cliente)<input @bind="Cliente.Conta.Link" placeholder="https://" /></label>
+        <div class="row"><button type="button" class="btn-g" @onclick="SalvarConta" disabled="@ocupado">Salvar</button>@if (salvo) { <span class="ok mini">salvo</span> }</div>
     </div>
 </div>
 
 @if (erro is not null) { <p class="erro" role="alert">@erro</p> }
 
-<footer class="etapa-rodape">
+<footer class="efoot">
     @{ var (ok, pend) = Estagios.AssetsCompletos(Cliente); }
-    @if (ok) { <span class="ok">Assets completos.</span> } else { <span class="warn">Falta: @string.Join(", ", pend).</span> }
-    <button type="button" class="btn btn-destaque" @onclick="() => Avancar.InvokeAsync()">Ir para a ficha &rarr;</button>
+    @if (ok) { <span class="aq">Assets completos.</span> } else { <span class="g4t">Falta: @string.Join(", ", pend).</span> }
+    <button type="button" class="btn-p" @onclick="() => Avancar.InvokeAsync()">Ir para a ficha &rarr;</button>
 </footer>
 
 @code {
@@ -85,6 +111,13 @@
     string adAccount = "", pageId = "", pageNome = "", tokenNovo = "";
     string? erro; bool ocupado; bool salvo;
 
+    protected override void OnParametersSet()
+    {
+        adAccount = Cliente.Conta.AdAccountId ?? adAccount;
+        pageId = Cliente.Conta.PageId ?? pageId;
+        pageNome = Cliente.Conta.PageNome ?? pageNome;
+    }
+
     async Task GravarToken()
     {
         erro = null; ocupado = true;
@@ -93,16 +126,10 @@
             var r = await Api.GravarTokenDoSquadAsync(Cliente, tokenNovo);
             tokenNovo = "";
             if (r.Valido == false) erro = $"a Meta recusou o token: {r.Motivo}";
+            else await ACaminho("token do squad trocado");
         }
         catch (Exception ex) { erro = ex.Message; }
         finally { ocupado = false; }
-    }
-
-    protected override void OnParametersSet()
-    {
-        adAccount = Cliente.Conta.AdAccountId ?? adAccount;
-        pageId = Cliente.Conta.PageId ?? pageId;
-        pageNome = Cliente.Conta.PageNome ?? pageNome;
     }
 
     async Task Subir(InputFileChangeEventArgs e, TipoDeAsset tipo)
@@ -133,7 +160,7 @@
         try
         {
             var r = await Api.ConectarContaAsync(Cliente, adAccount, pageId, pageNome);
-            if (!r.Ok) erro = r.Erro;
+            if (!r.Ok) erro = r.Erro; else await ACaminho("conta conectada");
         }
         catch (Exception ex) { erro = ex.Message; }
         finally { ocupado = false; }
@@ -150,7 +177,7 @@
     async Task Conferir()
     {
         erro = null; ocupado = true;
-        try { await Api.ConferirTokenAsync(Cliente); }
+        try { var r = await Api.ConferirTokenAsync(Cliente); if (r.Valido == true) await ACaminho("token conferido"); }
         catch (Exception ex) { erro = ex.Message; }
         finally { ocupado = false; }
     }
@@ -162,4 +189,6 @@
         catch (Exception ex) { erro = ex.Message; }
         finally { ocupado = false; }
     }
+
+    async Task ACaminho(string acao) { try { await Api.RegistrarACaminhoAsync(Cliente.Slug, acao); } catch { } }
 }

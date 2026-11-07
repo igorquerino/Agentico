@@ -55,6 +55,8 @@ public sealed class Cliente
     public List<Recomendacao> Recomendacoes { get; set; } = new();
     public List<AcaoDoAgente> Acoes { get; set; } = new();
     public DateTime? UltimaRodada { get; set; }
+    /// <summary>O que o Panorama lê além do fluxo: CS, pedido do cliente, automação pausada e os KPIs do mês.</summary>
+    public SinaisDoCliente Sinais { get; set; } = new();
 
     [System.Text.Json.Serialization.JsonIgnore] public IEnumerable<PecaDeCopy> Pecas => Lotes.SelectMany(l => l.Pecas);
     [System.Text.Json.Serialization.JsonIgnore] public bool ContaConectada => !string.IsNullOrWhiteSpace(Conta.AdAccountId);

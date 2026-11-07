@@ -15,7 +15,7 @@ namespace BlueOS.Core.Api;
    O que NÃO é simulado: o planejador, a árvore de decisão, a régua de MQL, o
    crivo da copy e as travas (só em produção, head pra cima, tudo nasce PAUSED).
    ============================================================================ */
-public sealed class DemoApi : IBlueApi
+public sealed partial class DemoApi : IBlueApi
 {
     readonly List<Cliente> _clientes = new();
     bool _chaveGeral = true;
@@ -303,7 +303,7 @@ public sealed class DemoApi : IBlueApi
             nova.Avisos.Add("os conjuntos de interesse nascem com a segmentação base (BR, idade): defina os interesses no Gerenciador antes de ativar.");
         c.Publicacao = nova;
         c.Status = "ativo";
-        c.Acoes.Insert(0, new AcaoDoAgente(DateTime.Now, "log", $"criou campanha \"{nova.NomeDaCampanha}\" com {nova.Conjuntos.Count} conjuntos e {nova.Anuncios.Count} anúncios, tudo PAUSED", "pelo Blue.OS (automacao_start)", "você", null));
+        c.Acoes.Insert(0, new AcaoDoAgente(DateTime.Now, "log", $"criou campanha \"{nova.NomeDaCampanha}\" com {nova.Conjuntos.Count} conjuntos e {nova.Anuncios.Count} anúncios, tudo pausado", "pelo Blue.OS (automacao_start)", "você", null));
         Avisar();
         return new(true, null, null, true, nova, "tudo nasceu PAUSADO. Reveja no Gerenciador antes de ativar.");
     }
@@ -672,8 +672,8 @@ public sealed class DemoApi : IBlueApi
         }
         pubN.Link = $"https://adsmanager.facebook.com/adsmanager/manage/campaigns?act={nautilus.Conta.AdAccountId}&selected_campaign_ids={pubN.CampanhaId}";
         nautilus.Publicacao = pubN;
-        nautilus.Acoes.Add(new AcaoDoAgente(DateTime.Now.AddDays(-14), "log", $"criou campanha \"{pubN.NomeDaCampanha}\" com {pubN.Conjuntos.Count} conjuntos, tudo PAUSED", "pelo Blue.OS (automacao_start)", "Alef", null));
-        nautilus.Acoes.Add(new AcaoDoAgente(DateTime.Now.AddDays(-13), "log", "mudou status campanha · campanha → ACTIVE", "lido da Meta", "Alef", null));
+        nautilus.Acoes.Add(new AcaoDoAgente(DateTime.Now.AddDays(-14), "log", $"criou campanha \"{pubN.NomeDaCampanha}\" com {pubN.Conjuntos.Count} conjuntos, tudo pausado", "pelo Blue.OS (automacao_start)", "Alef", null));
+        nautilus.Acoes.Add(new AcaoDoAgente(DateTime.Now.AddDays(-13), "log", "mudou status campanha · campanha → ativa", "lido da Meta", "Alef", null));
         /* O cron já rodou hoje: a carteira abre com as decisões do agente esperando o gestor. */
         RodarMotorAsync(nautilus).GetAwaiter().GetResult();
 
@@ -728,5 +728,8 @@ public sealed class DemoApi : IBlueApi
 
         /* 5. Cliente que acabou de CHEGAR. */
         _clientes.Add(new Cliente { Id = NovoId(), Slug = "escola-aurora", Nome = "Escola Aurora", Status = "onboarding", Squad = "POSEIDON", Desde = Hoje });
+
+        /* 6. O resto do squad, para o Panorama ter 50 estrelas (DemoApi.Panorama.cs). */
+        SemearPanorama();
     }
 }

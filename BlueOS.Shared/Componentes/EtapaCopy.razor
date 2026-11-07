@@ -11,7 +11,7 @@
             <span class="pilula">@(faixa is null ? "sem budget" : Faixa.Rotulo(faixa.Value, Api.Parametros.Faixas))</span>
             <span class="pilula">etapas: @string.Join(" + ", etapas)</span>
         </p>
-        <p class="text-3 mini">A orientação do nicho (ordem das estruturas, sem número) vem do vault @Api.Parametros.VaultSha. Estado: <strong>@OrientacaoDoNicho.Estado(Cliente.NichoSlug)</strong>. Estático só em MOFU e BOFU; TOFU exige storytelling, então sai como vídeo (R2).</p>
+        <p class="text-3 mini">A orientação do nicho (ordem das estruturas, sem número). Estado: <strong>@OrientacaoDoNicho.Estado(Cliente.NichoSlug)</strong>. Estático só em MOFU e BOFU; TOFU exige storytelling, então sai como vídeo (R2).</p>
         <table class="tabela compacta">
             <thead><tr><th>Etapa</th><th>Headline</th><th>Sub</th><th>CTA</th><th>Evitar</th></tr></thead>
             <tbody>
@@ -44,7 +44,7 @@
     <div class="lote">
         <header class="lote-cab">
             <strong>Lote @lote.Numero</strong>
-            <span class="text-3 mini">@lote.CriadoEm.ToString("dd/MM HH:mm") &middot; @lote.Modelo &middot; vault @lote.VaultSha &middot; @lote.Pecas.Count(p => p.Aprovada) de @lote.Pecas.Count aprovadas</span>
+            <span class="text-3 mini">@lote.CriadoEm.ToString("dd/MM HH:mm") &middot; @lote.Modelo &middot; @lote.Pecas.Count(p => p.Aprovada) de @lote.Pecas.Count aprovadas</span>
         </header>
         <div class="grade-pecas">
             @foreach (var p in lote.Pecas)

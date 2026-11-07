@@ -1,32 +1,60 @@
 @inherits LayoutComponentBase
 @inject FonteDeDados Fonte
+@inject NavigationManager Nav
+@inject IJSRuntime JS
 @implements IDisposable
 
+@* O chrome do app: a barra de vidro (logo, Panorama · Start, busca, "ao vivo", sino, squad, avatar), a faixa de
+   gravidade 1 que aparece em QUALQUER tela e o conteúdo. O layout é dono da leitura do Panorama: ao abrir, a cada
+   mudança da fonte e a cada minuto; a página do Panorama só desenha o que está no Painel. *@
+<CascadingValue Value="painel" IsFixed="true">
 <div class="app">
-    <aside class="rail" aria-label="Cargos">
-        <div class="rail-logo" title="Blue OS">B</div>
+    <header class="top">
+        <img class="logo" src="_content/BlueOS.Shared/blue-ocean-logo.png" alt="Blue Ocean" />
         <nav>
-            <a class="rail-item ativo" href="" title="Gestor de Tráfego"><span class="ic">&#9654;</span><span>Tráfego</span></a>
-            <span class="rail-item desativado" title="Em breve: tela do CS"><span class="ic">&#9679;</span><span>CS</span></span>
-            <span class="rail-item desativado" title="Em breve: tela do Designer"><span class="ic">&#9679;</span><span>Designer</span></span>
-            <span class="rail-item desativado" title="Em breve: tela do SEO"><span class="ic">&#9679;</span><span>SEO</span></span>
-            <span class="rail-item desativado" title="Em breve: administração"><span class="ic">&#9679;</span><span>Admin</span></span>
+            <NavLink href="" Match="NavLinkMatch.All">Panorama</NavLink>
+            <NavLink href="start">Start</NavLink>
         </nav>
-        <div class="rail-rodape" title="Desktop (MAUI Blazor Hybrid)">desktop</div>
-    </aside>
-    <div class="main">
-        <header class="topo">
-            <div class="topo-titulo"><strong>Blue OS</strong><span class="sep">&middot;</span>Gestor de Tráfego<span class="sep">&middot;</span><span class="text-3">cargo: gestor de tráfego</span></div>
-            <div class="topo-direita">
-                <span class="pilula @(Fonte.Atual.EhDemo ? "pilula-warn" : "pilula-ok")" title="De onde os dados vêm">@Fonte.Atual.Origem</span>
-                <button type="button" class="btn btn-ghost" @onclick="() => mostrarFonte = true">Fonte de dados</button>
-            </div>
-        </header>
-        <main class="conteudo">
-            @Body
-        </main>
-    </div>
+        <label class="find @(painel.Busca.Length > 0 ? "typing" : "")">
+            <i>&#8981;</i>
+            <input id="busca" placeholder="Achar cliente…" autocomplete="off" @bind="painel.Busca" @bind:event="oninput" @bind:after="BuscaMudou" @onkeydown="TeclaDaBusca" />
+            <kbd>@(painel.Busca.Length > 0 ? $"{achadas.Count} de {painel.Panorama?.Estrelas.Count ?? 0}" : "/")</kbd>
+            @if (painel.Busca.Length > 0 && achadas.Count > 0)
+            {
+                var a = achadas[0];
+                <span class="hit">
+                    @if (a.Principal is { } al) { <em class="num" style="background:@Gravidades.De(al.Gravidade).Cor">@((int)al.Gravidade)</em> }
+                    else { <em class="num" style="background:var(--aqua)">&#10003;</em> }
+                    <b>@a.Nome</b> · @(a.Principal is { } p2 ? Gravidades.Rotulo(p2.Gravidade) : "em dia")
+                    <em>Enter abre · Esc limpa</em>
+                </span>
+            }
+        </label>
+        <span class="live @(painel.Erro is not null ? "parado" : "")" title="@(painel.LidoEm is { } l ? $"Panorama lido às {l:HH:mm:ss}" : "")">
+            <i></i>@(painel.Erro is not null ? "sem leitura" : painel.Panorama is { } pv ? "ao vivo · " + pv.SinaisDeVida.FirstOrDefault()?.Texto.Replace("lida", "Meta lida") : "lendo…")
+        </span>
+        @{ var interrompem = painel.Panorama?.Interrompem.ToList() ?? new(); }
+        <button type="button" class="bell @(interrompem.Count > 0 ? "on" : "")" title="@(interrompem.Count > 0 ? $"{interrompem.Count} alerta(s) de gravidade 1" : "nenhum alerta de gravidade 1")" @onclick="() => IrParaOMapa(interrompem.FirstOrDefault()?.Slug)">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg>
+            @if (interrompem.Count > 0) { <b>@interrompem.Count</b> }
+        </button>
+        <button type="button" class="sq @(Fonte.Atual.EhDemo ? "demo" : "")" title="@Fonte.Atual.Origem — clique para trocar a fonte de dados" @onclick="() => mostrarFonte = true"><i></i>@(painel.Panorama?.Squad ?? Fonte.Config.SquadPadrao ?? "squad")</button>
+        <span class="avatar" title="@(painel.Panorama?.Placar.Gestor)">@Iniciais(painel.Panorama?.Placar.Gestor)</span>
+    </header>
+    @if (interrompem.Count > 0)
+    {
+        var e = interrompem[0]; var al = e.Principal!;
+        <div class="banner" role="alert">
+            <i>1</i><b>@al.Titulo</b><span>@e.Nome · @al.Curto</span>
+            <button type="button" class="link" @onclick="() => IrParaOMapa(e.Slug)">ver no mapa</button>
+            <span class="any">@(interrompem.Count > 1 ? $"+{interrompem.Count - 1} · " : "")sino e faixa aparecem em qualquer tela</span>
+        </div>
+    }
+    <main class="conteudo @(NaHome ? "cheio" : "")">
+        @Body
+    </main>
 </div>
+</CascadingValue>
 
 @if (mostrarFonte)
 {
@@ -40,9 +68,59 @@
 </div>
 
 @code {
+    readonly Painel painel = new();
     bool mostrarFonte;
+    IReadOnlyList<Estrela> achadas = [];
+    System.Threading.Timer? relogio;
+    DotNetObjectReference<MainLayout>? eu;
+    IBlueApi? fonteVista;
 
-    protected override void OnInitialized() => Fonte.Mudou += Atualizar;
-    void Atualizar() => InvokeAsync(StateHasChanged);
-    public void Dispose() => Fonte.Mudou -= Atualizar;
+    bool NaHome => new Uri(Nav.Uri).AbsolutePath.TrimEnd('/') == "";
+
+    protected override async Task OnInitializedAsync()
+    {
+        Fonte.Mudou += FonteMudou;
+        painel.Mudou += PainelMudou;
+        Nav.LocationChanged += (_, _) => InvokeAsync(StateHasChanged);
+        try { await Fonte.AutoConectarAsync(); } catch { }
+        await LerAsync();
+        relogio = new System.Threading.Timer(_ => InvokeAsync(LerAsync), null, TimeSpan.FromSeconds(60), TimeSpan.FromSeconds(60));
+    }
+
+    protected override async Task OnAfterRenderAsync(bool first)
+    {
+        if (!first) return;
+        try { eu = DotNetObjectReference.Create(this); await JS.InvokeVoidAsync("blueos.atalhos", eu); } catch { }
+    }
+
+    async Task LerAsync()
+    {
+        var api = Fonte.Atual;
+        if (!ReferenceEquals(fonteVista, api)) { painel.Limpar(); fonteVista = api; }
+        painel.ComecouALer();
+        try { painel.Leu(await api.LerPanoramaAsync(Fonte.Config.SquadPadrao)); }
+        catch (Exception e) { painel.Falhou(e.Message); }
+    }
+
+    void FonteMudou() => InvokeAsync(LerAsync);
+    void PainelMudou() { achadas = painel.Achadas(); InvokeAsync(StateHasChanged); }
+    void BuscaMudou() { achadas = painel.Achadas(); painel.Avisar(); }
+
+    void TeclaDaBusca(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter" && achadas.Count > 0) { painel.Foco = achadas[0].Slug; painel.Busca = ""; achadas = []; painel.Avisar(); if (!NaHome) Nav.NavigateTo(""); }
+        else if (e.Key == "Escape") { painel.Busca = ""; achadas = []; painel.Avisar(); }
+    }
+
+    void IrParaOMapa(string? slug)
+    {
+        painel.Foco = slug; painel.Avisar();
+        if (!NaHome) Nav.NavigateTo("");
+    }
+
+    [JSInvokable] public Task Esc() => InvokeAsync(() => { painel.Busca = ""; painel.Foco = null; achadas = []; painel.Avisar(); });
+
+    static string Iniciais(string? nome) => string.IsNullOrWhiteSpace(nome) ? "?" : string.Concat(nome.Split(' ', StringSplitOptions.RemoveEmptyEntries).Take(2).Select(p => char.ToUpperInvariant(p[0])));
+
+    public void Dispose() { Fonte.Mudou -= FonteMudou; painel.Mudou -= PainelMudou; relogio?.Dispose(); eu?.Dispose(); }
 }

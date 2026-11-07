@@ -7,11 +7,21 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <PackageReference Include="Anthropic" Version="13.3.0" />
     <PackageReference Include="Npgsql" Version="10.0.3" />
+    <PackageReference Include="SkiaSharp" Version="4.154.0" />
+    <PackageReference Include="SkiaSharp.NativeAssets.Win32" Version="4.154.0" />
   </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\BlueOS.Core\BlueOS.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- as fontes do Designer (as mesmas do V1, lib/fontes), copiadas para a saída -->
+    <None Include="Fontes\*.ttf" CopyToOutputDirectory="PreserveNewest" />
+    <!-- a régua V8 do Agente de Copy (o mesmo arquivo do V1, lib/regras/copy) -->
+    <None Include="Regras\*.md" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

@@ -5,27 +5,32 @@ using System.Text.Json.Serialization;
 using BlueOS.Core.Copy;
 using BlueOS.Core.Modelos;
 using BlueOS.Core.Motor;
+using BlueOS.Core.Publicar;
 
 namespace BlueOS.Core.Api;
 
 /* ============================================================================
    O CLIENTE DA API .NET (BlueOS.Api): um round-trip por tela.
    ----------------------------------------------------------------------------
-   Leituras e escritas de dados vão à API. O que ainda escreve na Meta ou no
-   Storage (publicar, rodar o motor, aceite com escrita, token, upload, copy
-   pelo modelo) continua indo ao V1 pela mesma sessão, até o executor e a carga
-   existirem na API. Sem V1 ligado, essas ações explicam o que falta.
+   Leituras e escritas de dados vão à API; desde 30/10/2026 também a ESCRITA
+   NA META (o Publicar do Start e o aceite de PAUSAR/DUPLICAR, pelo executor da
+   API) e, desde 31/10/2026, a GERAÇÃO (copy pelo Agente de Copy, artes pelo
+   Designer), o setup (assets, conta, token do squad, criar cliente) e rodar o
+   motor. Nada mais passa pelo V1: o V1Api recebido no construtor fica só para
+   compatibilidade da Fonte de dados.
    ============================================================================ */
 public sealed class ApiNetApi : IBlueApi, IDisposable
 {
     static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web) { Converters = { new JsonStringEnumConverter() } };
     readonly HttpClient _http;
+    /// <summary>O mesmo endereço com 5 minutos de espera: publicar é mais de uma dúzia de idas à Meta.</summary>
+    readonly HttpClient _lento;
     readonly V1Api? _v1;
     readonly Dictionary<string, Cliente> _cache = new();
     string? _usuario;
 
     public string BaseUrl { get; }
-    public string Origem => $"API .NET · {BaseUrl}{(_usuario is null ? " (sem sessão)" : $" · {_usuario}")}{(_v1 is null ? " · sem V1 para a Meta" : "")}";
+    public string Origem => $"API .NET · {BaseUrl}{(_usuario is null ? " (sem sessão)" : $" · {_usuario}")}";
     public bool EhDemo => false;
     public ParametrosMotor Parametros { get; } = ParametrosMotor.PadraoDoVault;
     public bool PodeSimularVeiculacao => false;
@@ -38,12 +43,12 @@ public sealed class ApiNetApi : IBlueApi, IDisposable
         _v1 = v1;
         _http = new HttpClient { BaseAddress = new Uri(BaseUrl + "/"), Timeout = TimeSpan.FromSeconds(60) };
         _http.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+        _lento = new HttpClient { BaseAddress = new Uri(BaseUrl + "/"), Timeout = TimeSpan.FromMinutes(5) };
         if (v1 is not null) v1.Mudou += Avisar;
     }
 
-    public void Dispose() { _http.Dispose(); _v1?.Dispose(); }
+    public void Dispose() { _http.Dispose(); _lento.Dispose(); _v1?.Dispose(); }
 
-    V1Api V1 => _v1 ?? throw new InvalidOperationException("esta ação ainda passa pelo V1 (escrita na Meta ou no Storage) e o V1 não está ligado: informe o endereço dele na Fonte de dados.");
 
     public async Task<string> LoginAsync(string login, string senha)
     {
@@ -52,6 +57,7 @@ public sealed class ApiNetApi : IBlueApi, IDisposable
         if (!r.IsSuccessStatusCode) throw new InvalidOperationException(Erro(j, "login recusado pela API"));
         var token = j.GetProperty("token").GetString()!;
         _http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
+        _lento.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
         _usuario = j.TryGetProperty("usuario", out var u) && u.TryGetProperty("nome", out var n) ? n.GetString() : login;
         Avisar();
         return _usuario ?? login;
@@ -147,7 +153,16 @@ public sealed class ApiNetApi : IBlueApi, IDisposable
 
     /* ---- escritas de dados: a API ------------------------------------------------- */
 
-    public Task<Cliente> CriarClienteAsync(string nome, string squad) => V1.CriarClienteAsync(nome, squad);
+    public async Task<Cliente> CriarClienteAsync(string nome, string squad)
+    {
+        var j = await Envie(HttpMethod.Post, "api/clientes", new { nome, squad });
+        await ListarClientesAsync();
+        var slug = Str(j, "slug") ?? "";
+        Avisar();
+        return _cache.TryGetValue(slug, out var c) ? c : throw new InvalidOperationException(Bol(j, "sem_squad") == true
+            ? "o cliente foi criado sem squad e por isso não aparece na carteira: informe o squad ao criar."
+            : "o cliente foi criado, mas não apareceu na carteira: confira o vínculo de squad.");
+    }
 
     public async Task SalvarFichaAsync(Cliente c)
     {
@@ -179,32 +194,201 @@ public sealed class ApiNetApi : IBlueApi, IDisposable
         Avisar();
     }
 
+    /// <summary>Negar, ou aceitar: o aceite de PAUSAR/DUPLICAR é APLICADO na Meta pelo executor da API, com as travas
+    /// de dinheiro. A resposta traz os avisos da porta (verba que desceu, cópia pausada, ensaio fora da produção).</summary>
     public async Task<Recomendacao> DecidirAsync(Cliente c, string recomendacaoId, bool aceita, string? motivo)
     {
-        var rec = c.Recomendacoes.FirstOrDefault(r => r.Id == recomendacaoId) ?? throw new KeyNotFoundException("recomendação não encontrada");
-        if (aceita && Arvore.Escreve(rec.Acao)) return await V1.DecidirAsync(c, recomendacaoId, true, motivo);
-        await Envie(HttpMethod.Post, $"api/clientes/{Uri.EscapeDataString(c.Slug)}/recomendacoes/{recomendacaoId}/decisao", new { aceita, motivo });
+        var req = new HttpRequestMessage(HttpMethod.Post, $"api/clientes/{Uri.EscapeDataString(c.Slug)}/recomendacoes/{recomendacaoId}/decisao") { Content = JsonContent.Create(new { aceita, motivo }, options: Json) };
+        HttpResponseMessage r;
+        try { r = await _lento.SendAsync(req); }
+        catch (HttpRequestException e) { throw new InvalidOperationException($"não consegui falar com a API em {BaseUrl}: {e.Message}"); }
+        var j = await LerJson(r);
+        if (!r.IsSuccessStatusCode)
+            throw new InvalidOperationException(Erro(j, j.ValueKind == JsonValueKind.Object && j.TryGetProperty("erro", out var e1) && e1.ValueKind == JsonValueKind.String ? e1.GetString()! : $"a API respondeu {(int)r.StatusCode}"));
         var lista = await ListarRecomendacoesAsync(c);
+        var rec = lista.First(x => x.Id == recomendacaoId);
+        var avisos = j.ValueKind == JsonValueKind.Object && j.TryGetProperty("avisos", out var av) && av.ValueKind == JsonValueKind.Array
+            ? av.EnumerateArray().Select(x => x.GetString() ?? "").Where(x => x != "").ToList() : new List<string>();
+        if (j.ValueKind == JsonValueKind.Object && j.TryGetProperty("erro", out var er) && er.ValueKind == JsonValueKind.String) avisos.Insert(0, er.GetString()!);
+        foreach (var a in avisos) c.Acoes.Insert(0, new AcaoDoAgente(DateTime.Now, "motor", a, rec.Estado.ToString().ToLowerInvariant(), _usuario, null));
         Avisar();
-        return lista.First(r => r.Id == recomendacaoId);
+        return rec;
     }
 
     /* ---- o que ainda passa pelo V1 (Meta e Storage) ------------------------------- */
 
-    public Task<Asset> SubirAssetAsync(Cliente c, TipoDeAsset tipo, string nome, string mime, byte[] bytes) => V1.SubirAssetAsync(c, tipo, nome, mime, bytes);
-    public Task RemoverAssetAsync(Cliente c, string assetId) => V1.RemoverAssetAsync(c, assetId);
-    public Task<ResultadoDaConta> ConectarContaAsync(Cliente c, string? adAccountId, string? pageId, string? pageNome) => V1.ConectarContaAsync(c, adAccountId, pageId, pageNome);
+    /* ---- o setup do cliente, dentro da API (31/10/2026): assets, conta e o token do squad ---- */
+
+    public async Task<Asset> SubirAssetAsync(Cliente c, TipoDeAsset tipo, string nome, string mime, byte[] bytes)
+    {
+        var req = new HttpRequestMessage(HttpMethod.Post, $"api/clientes/{Uri.EscapeDataString(c.Slug)}/assets") { Content = JsonContent.Create(new { tipo = Asset.SlugDoTipo(tipo), nome, mime, base64 = Convert.ToBase64String(bytes) }, options: Json) };
+        HttpResponseMessage r;
+        try { r = await _lento.SendAsync(req); }
+        catch (HttpRequestException e) { throw new InvalidOperationException($"não consegui falar com a API em {BaseUrl}: {e.Message}"); }
+        var j = ParseOuVazio(await r.Content.ReadAsStringAsync());
+        if (!r.IsSuccessStatusCode) throw new InvalidOperationException(Erro(j, "o upload falhou"));
+        var asset = new Asset
+        {
+            Id = Str(j, "asset_id") ?? Guid.NewGuid().ToString("n"), Tipo = tipo, Nome = Str(j, "nome") ?? nome, Mime = mime, TamanhoBytes = bytes.Length, Origem = "manual", EmUso = true,
+            Url = Str(j, "url") ?? (mime.StartsWith("image/") ? $"data:{mime};base64,{Convert.ToBase64String(bytes)}" : null),
+        };
+        c.Assets.RemoveAll(a => a.Id == asset.Id || (a.Tipo == tipo && a.Nome == asset.Nome));
+        c.Assets.Add(asset); Avisar();
+        return asset;
+    }
+
+    public async Task RemoverAssetAsync(Cliente c, string assetId)
+    {
+        var r = await _http.DeleteAsync($"api/clientes/{Uri.EscapeDataString(c.Slug)}/assets/{Uri.EscapeDataString(assetId)}");
+        if (!r.IsSuccessStatusCode) throw new InvalidOperationException(Erro(await LerJson(r), "não consegui remover o asset"));
+        c.Assets.RemoveAll(a => a.Id == assetId); Avisar();
+    }
+
+    public async Task<ResultadoDaConta> ConectarContaAsync(Cliente c, string? adAccountId, string? pageId, string? pageNome)
+    {
+        try
+        {
+            var desconectar = string.IsNullOrWhiteSpace(adAccountId);
+            await Envie(HttpMethod.Patch, $"api/clientes/{Uri.EscapeDataString(c.Slug)}/conta", new { adAccountId = desconectar ? null : adAccountId!.Trim(), pageId, pageNome, desconectar });
+            c.Conta.AdAccountId = desconectar ? null : adAccountId!.Trim().Replace("act_", "");
+            c.Conta.PageId = pageId; c.Conta.PageNome = pageNome;
+            Avisar();
+            return new(true, null);
+        }
+        catch (Exception e) { return new(false, e.Message); }
+    }
+
     public Task SalvarContaAsync(Cliente c) { Avisar(); return Task.CompletedTask; }
-    public Task<EstadoDoToken> ConferirTokenAsync(Cliente c) => V1.ConferirTokenAsync(c);
-    public Task<EstadoDoToken> GravarTokenDoSquadAsync(Cliente c, string token) => V1.GravarTokenDoSquadAsync(c, token);
-    public Task<LoteDeCopy> GerarCopyAsync(Cliente c, IReadOnlyList<GeradorDemo.Pedido> pedido, string? briefing) => V1.GerarCopyAsync(c, pedido, briefing);
-    public Task AjustarPecaAsync(Cliente c, string pecaId, string instrucao) => V1.AjustarPecaAsync(c, pecaId, instrucao);
+
+    public async Task<EstadoDoToken> ConferirTokenAsync(Cliente c)
+    {
+        var j = await Get<JsonElement>($"api/squads/{Uri.EscapeDataString(c.Squad)}/token");
+        c.Conta.TokenValido = Bol(j, "valido"); c.Conta.TokenMotivo = Str(j, "motivo"); c.Conta.TokenConferidoEm = DateTime.Now;
+        Avisar();
+        return new(c.Conta.TokenValido, c.Conta.TokenMotivo);
+    }
+
+    public async Task<EstadoDoToken> GravarTokenDoSquadAsync(Cliente c, string token)
+    {
+        await Envie(HttpMethod.Post, $"api/squads/{Uri.EscapeDataString(c.Squad)}/token", new { token = token.Trim() });
+        return await ConferirTokenAsync(c);
+    }
+    /* ---- o Agente de Copy, dentro da API (31/10/2026): o mesmo contrato do /api/os/copy/gerar do V1 ---- */
+
+    static string? Str(JsonElement j, string n) => j.ValueKind == JsonValueKind.Object && j.TryGetProperty(n, out var v) ? (v.ValueKind == JsonValueKind.String ? v.GetString() : v.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined ? null : v.GetRawText()) : null;
+    static double? Num(JsonElement j, string n) => j.ValueKind == JsonValueKind.Object && j.TryGetProperty(n, out var v) && v.ValueKind == JsonValueKind.Number ? v.GetDouble() : null;
+    static bool? Bol(JsonElement j, string n) => j.ValueKind == JsonValueKind.Object && j.TryGetProperty(n, out var v) ? v.ValueKind == JsonValueKind.True ? true : v.ValueKind == JsonValueKind.False ? false : null : null;
+    static IEnumerable<JsonElement> Itens(JsonElement j, string n) => j.ValueKind == JsonValueKind.Object && j.TryGetProperty(n, out var v) && v.ValueKind == JsonValueKind.Array ? v.EnumerateArray() : [];
+
+    public async Task<LoteDeCopy> GerarCopyAsync(Cliente c, IReadOnlyList<GeradorDemo.Pedido> pedido, string? briefing)
+    {
+        var itens = pedido.Select(p => new { tipo = p.Tipo == TipoPeca.Video ? "video" : "estatico", funil = p.Etapa.ToString().ToLowerInvariant(), nPecas = p.NPecas });
+        var req = new HttpRequestMessage(HttpMethod.Post, $"api/clientes/{Uri.EscapeDataString(c.Slug)}/copy/gerar") { Content = JsonContent.Create(new { itens, briefing }, options: Json) };
+        HttpResponseMessage r;
+        try { r = await _lento.SendAsync(req); }
+        catch (HttpRequestException e) { throw new InvalidOperationException($"não consegui falar com a API em {BaseUrl}: {e.Message}"); }
+        catch (TaskCanceledException) { throw new InvalidOperationException("o Agente de Copy não respondeu em 5 minutos."); }
+        var texto = await r.Content.ReadAsStringAsync();
+        var j = ParseOuVazio(texto);
+        if (!r.IsSuccessStatusCode) throw new InvalidOperationException(Erro(j, $"a API respondeu {(int)r.StatusCode} ao gerar copy"));
+        var lote = new LoteDeCopy
+        {
+            Id = Str(j, "lote_id") ?? Guid.NewGuid().ToString("n"), Numero = (int)(Num(j, "numero") ?? c.Lotes.Count + 1), Modelo = Str(j, "modelo") ?? "", Briefing = briefing,
+            VaultSha = Str(j.TryGetProperty("vault", out var v) ? v : default, "sha") ?? Parametros.VaultSha, NichoSlug = c.NichoSlug,
+            TokensIn = (int)(Num(j, "tokens_in") ?? 0), TokensOut = (int)(Num(j, "tokens_out") ?? 0),
+        };
+        foreach (var item in Itens(j, "itens"))
+        {
+            var funil = Str(item, "funil") ?? "mofu";
+            var etapa = funil.ToUpperInvariant() switch { "TOFU" => Etapa.TOFU, "BOFU" => Etapa.BOFU, _ => Etapa.MOFU };
+            var tipo = Str(item, "tipo") == "video" ? TipoPeca.Video : TipoPeca.Estatico;
+            foreach (var p in Itens(item, "pecas"))
+            {
+                var formas = Itens(p, "forma_headline").Select(x => x.GetString() ?? "").Where(x => x != "").ToList();
+                lote.Pecas.Add(new PecaDeCopy
+                {
+                    Id = Str(p, "peca_id") ?? Guid.NewGuid().ToString("n"), Etapa = etapa, Tipo = tipo, Numero = (int)(Num(p, "ordem") ?? 0),
+                    Headline = Str(p, "headline") ?? "", Sub = Str(p, "corpo") ?? "", Cta = Str(p, "cta") ?? "",
+                    AnguloHeadline = Str(p, "angulo_headline") ?? "outro", PapelSub = Str(p, "papel_sub") ?? "fragmento", TipoCta = Str(p, "tipo_cta") ?? "outro", FormasHeadline = formas,
+                    CrivoOk = Bol(p, "crivo_ok") ?? true, MotivoDoCrivo = Str(p, "crivo_motivo"), Regeneracoes = Bol(p, "regerada") == true ? [Str(p, "crivo_motivo") ?? "regerada pelo crivo"] : [],
+                });
+            }
+        }
+        c.Lotes.Insert(0, lote); Avisar();
+        return lote;
+    }
+
+    public async Task AjustarPecaAsync(Cliente c, string pecaId, string instrucao)
+    {
+        var req = new HttpRequestMessage(HttpMethod.Post, $"api/clientes/{Uri.EscapeDataString(c.Slug)}/pecas/{Uri.EscapeDataString(pecaId)}/ajustar") { Content = JsonContent.Create(new { instrucao }, options: Json) };
+        HttpResponseMessage r;
+        try { r = await _lento.SendAsync(req); }
+        catch (HttpRequestException e) { throw new InvalidOperationException($"não consegui falar com a API em {BaseUrl}: {e.Message}"); }
+        var j = ParseOuVazio(await r.Content.ReadAsStringAsync());
+        if (!r.IsSuccessStatusCode) throw new InvalidOperationException(Erro(j, $"a API respondeu {(int)r.StatusCode} ao ajustar a peça"));
+        var p = c.Pecas.First(x => x.Id == pecaId);
+        if (j.TryGetProperty("peca", out var np))
+        {
+            p.Headline = Str(np, "headline") ?? p.Headline; p.Sub = Str(np, "corpo") ?? p.Sub; p.Cta = Str(np, "cta") ?? p.Cta; p.Versao++;
+            p.AnguloHeadline = Str(np, "angulo_headline") ?? p.AnguloHeadline; p.PapelSub = Str(np, "papel_sub") ?? p.PapelSub; p.TipoCta = Str(np, "tipo_cta") ?? p.TipoCta;
+            p.CrivoOk = Bol(np, "crivo_ok") ?? true; p.MotivoDoCrivo = Str(np, "crivo_motivo");
+        }
+        Avisar();
+    }
     public async Task AprovarPecaAsync(Cliente c, string pecaId, bool aprovada)
     {
         await Envie(HttpMethod.Patch, $"api/clientes/{Uri.EscapeDataString(c.Slug)}/pecas/{Uri.EscapeDataString(pecaId)}", new { aprovada });
         c.Pecas.First(x => x.Id == pecaId).Aprovada = aprovada; Avisar();
     }
-    public Task<IReadOnlyList<Arte>> GerarArtesAsync(Cliente c, IReadOnlyList<string> pecaIds, IReadOnlyList<string> formatos, string? template = null) => V1.GerarArtesAsync(c, pecaIds, formatos, template);
+    /// <summary>O Designer dentro da API (31/10/2026): uma chamada por peça e formato, como o V1; o lote abre na primeira e
+    /// fecha com `encerrar` no fim. Cada arte que sai já entra na tela.</summary>
+    public async Task<IReadOnlyList<Arte>> GerarArtesAsync(Cliente c, IReadOnlyList<string> pecaIds, IReadOnlyList<string> formatos, string? template = null)
+    {
+        var fmts = formatos.Select(f => f == "story" ? "story" : "feed").Distinct().ToList();
+        if (fmts.Count == 0) fmts.Add("feed");
+        var pecas = c.Pecas.Where(p => pecaIds.Contains(p.Id)).ToList();
+        if (pecas.Count == 0) throw new InvalidOperationException("escolha pelo menos uma peça de copy aprovada: o Designer desenha em cima do texto dela.");
+        var novas = new List<Arte>(); var falhas = new List<string>();
+        string? loteId = null;
+        async Task<JsonElement> Chame(object corpo)
+        {
+            var req = new HttpRequestMessage(HttpMethod.Post, $"api/clientes/{Uri.EscapeDataString(c.Slug)}/artes/gerar") { Content = JsonContent.Create(corpo, options: Json) };
+            HttpResponseMessage r;
+            try { r = await _lento.SendAsync(req); }
+            catch (HttpRequestException e) { throw new InvalidOperationException($"não consegui falar com a API em {BaseUrl}: {e.Message}"); }
+            catch (TaskCanceledException) { throw new InvalidOperationException("o Designer não respondeu em 5 minutos."); }
+            var j = ParseOuVazio(await r.Content.ReadAsStringAsync());
+            if (!r.IsSuccessStatusCode) throw new InvalidOperationException(Erro(j, $"a API respondeu {(int)r.StatusCode} ao gerar a arte"));
+            return j;
+        }
+        foreach (var p in pecas)
+            foreach (var f in fmts)
+            {
+                try
+                {
+                    var j = await Chame(new { pecaIds = new[] { p.Id }, formatos = new[] { f }, template = string.IsNullOrWhiteSpace(template) ? null : template, designerLoteId = loteId });
+                    loteId ??= Str(j, "lote_id");
+                    foreach (var s in Itens(j, "pecas"))
+                    {
+                        var formato = Str(s, "formato") ?? f;
+                        var lote = c.Lotes.FirstOrDefault(l => l.Pecas.Any(x => x.Id == p.Id))?.Numero ?? 0;
+                        var arte = new Arte
+                        {
+                            Id = Str(s, "id") ?? Guid.NewGuid().ToString("n"), PecaId = p.Id, Etapa = p.Etapa, Formato = formato,
+                            Titulo = $"{p.Etapa} {p.Numero} · {formato} · copy lote {lote}", Url = Str(s, "url") ?? "", Lote = lote, Aprovada = false,
+                            Template = string.IsNullOrWhiteSpace(template) ? Design.TemplatesDoDesigner.Auto : template,
+                        };
+                        c.Artes.Insert(0, arte); novas.Add(arte); Avisar();
+                    }
+                    foreach (var fl in Itens(j, "falhas")) falhas.Add($"{Str(fl, "funil")} {Num(fl, "numero")} {f}: {Str(fl, "motivo")}");
+                }
+                catch (InvalidOperationException e) { falhas.Add($"{p.Etapa} {p.Numero} {f}: {e.Message}"); }
+            }
+        if (loteId is not null) { try { await Chame(new { designerLoteId = loteId, encerrar = true }); } catch { } }
+        if (novas.Count == 0) throw new InvalidOperationException("nenhuma arte saiu. " + string.Join(" · ", falhas.Distinct()));
+        if (falhas.Count > 0) throw new InvalidOperationException($"saíram {novas.Count} arte(s), mas não saíram: {string.Join(" · ", falhas.Distinct())}");
+        return novas;
+    }
     public Task AprovarArteAsync(Cliente c, string arteId, bool aprovada) { c.Artes.First(a => a.Id == arteId).Aprovada = aprovada; Avisar(); return Task.CompletedTask; }
     public Task EscolherPilotoAsync(Cliente c, Etapa etapa, string? arteId)
     {
@@ -212,7 +396,81 @@ public sealed class ApiNetApi : IBlueApi, IDisposable
         Avisar();
         return Task.CompletedTask;
     }
-    public Task<ResultadoDaPublicacao> PublicarAsync(Cliente c, PedidoDePublicacao pedido) => V1.PublicarAsync(c, pedido);
-    public Task<RodadaDoMotor> RodarMotorAsync(Cliente c) => V1.RodarMotorAsync(c);
+    /// <summary>O Publicar do Start pela API .NET: o piloto de CADA etapa vai no pedido (um anúncio por conjunto, com a arte
+    /// da etapa dele), e a API cria campanha, formulário, conjuntos e anúncios, tudo PAUSED, idempotente pelo hash.</summary>
+    public async Task<ResultadoDaPublicacao> PublicarAsync(Cliente c, PedidoDePublicacao pedido)
+    {
+        if (Fluxo.Estagios.ValidarAssentos(c, Parametros).FirstOrDefault(a => !a.Ok && a.Arte is not null) is { } errado)
+            return new(false, "assento_errado", $"validador de assento: {errado.Motivo}. Troque o piloto de {errado.Vaga} no Design por uma arte gerada pela copy de {errado.Vaga}.", false, null, null);
+        var corpo = new
+        {
+            pilotos = c.Pilotos.ToDictionary(kv => kv.Key.ToString(), kv => kv.Value),
+            texto = pedido.Texto, politicaUrl = pedido.PoliticaUrl, link = pedido.Link, formularioId = pedido.FormularioId,
+        };
+        var req = new HttpRequestMessage(HttpMethod.Post, $"api/clientes/{Uri.EscapeDataString(c.Slug)}/publicar") { Content = JsonContent.Create(corpo, options: Json) };
+        HttpResponseMessage r;
+        try { r = await _lento.SendAsync(req); }
+        catch (HttpRequestException e) { throw new InvalidOperationException($"não consegui falar com a API em {BaseUrl}: {e.Message}"); }
+        var texto = await r.Content.ReadAsStringAsync();
+        if (r.StatusCode == System.Net.HttpStatusCode.Unauthorized) throw new InvalidOperationException("sem sessão na API: faça o login de novo.");
+        ResultadoDoStart? res = null;
+        try { res = JsonSerializer.Deserialize<ResultadoDoStart>(texto, Json); } catch { }
+        if (res is null) throw new InvalidOperationException(Erro(ParseOuVazio(texto), $"a API respondeu {(int)r.StatusCode} ao publicar"));
+        if (!res.Ok) return new(false, res.Codigo, res.Motivo, res.Simulado, null, null);
+        var pub = new Publicacao
+        {
+            EstruturaHash = res.EstruturaHash ?? "", CampanhaId = res.CampanhaId, FormularioId = res.FormularioId, Link = res.Link, Estado = "ok",
+            NomeDaCampanha = res.Conjuntos.Count > 0 ? $"campanha {res.CampanhaId}" : "", VaultSha = Parametros.VaultSha,
+        };
+        foreach (var cj in res.Conjuntos)
+            pub.Conjuntos.Add(new ConjuntoCriado(cj.Nome, Enum.TryParse<Etapa>(cj.Etapa, out var et) ? et : Etapa.MOFU, cj.Publico, cj.AdsetId ?? "", 0));
+        foreach (var an in res.Anuncios)
+            pub.Anuncios.Add(new AnuncioCriado(an.Nome, an.AdsetId, an.AdId ?? "", c.Pilotos.Values.FirstOrDefault() ?? ""));
+        pub.Avisos.AddRange(res.Avisos);
+        if (res.SemCriativo && res.CriativoNaMao is { } cola)
+        {
+            pub.Avisos.Add(cola.Motivo);
+            foreach (var a in cola.Anuncios)
+                pub.Avisos.Add($"na mão: anúncio \"{a.Nome}\" no conjunto \"{a.Conjunto}\" ({a.AdsetId}): headline \"{a.Headline}\", texto \"{a.Corpo}\", botão {a.Cta}, arte {a.ImagemHash ?? "sem hash"}, UTMs {cola.UrlTags}");
+        }
+        if (res.JaPublicada) pub.Avisos.Insert(0, "esta estrutura já tinha sido publicada: é a mesma campanha.");
+        c.Publicacao = pub; Avisar();
+        return new(true, null, null, false, pub, res.Recado);
+    }
+    /// <summary>Rodar o motor pela API (31/10/2026): a passada de decisão sobre a carga do banco; a carga da Meta é o cron.</summary>
+    public async Task<RodadaDoMotor> RodarMotorAsync(Cliente c)
+    {
+        var j = await Envie(HttpMethod.Post, $"api/clientes/{Uri.EscapeDataString(c.Slug)}/motor/rodar", new { });
+        var recs = await ListarRecomendacoesAsync(c);
+        var naoAgiu = Itens(j, "nao_agiu").Select(x => x.GetString() ?? "").ToList();
+        c.UltimaRodada = DateTime.Now; Avisar();
+        return new RodadaDoMotor(recs.Where(r => r.Estado == EstadoDaRecomendacao.Pendente).ToList(), (int)(Num(j, "gravadas") ?? 0), (int)(Num(j, "repetidas") ?? 0), [], naoAgiu, [], Str(j, "vault_sha"));
+    }
     public Task SimularVeiculacaoAsync(Cliente c, int dias) => throw new NotSupportedException("a veiculação é real: ative a campanha no Gerenciador e a carga diária lê a Meta.");
+
+    /* ---- panorama: montado no app sobre a carteira da API (a rota /api/panorama é o próximo passo) ---- */
+    readonly PanoramaLocal _panorama = new("você");
+    bool _semRotaDoPanorama;
+    /// <summary>GET /api/panorama (KPIs, CS, token, visto e pontos numa leitura). Numa API antiga, sem a rota, monta no app.</summary>
+    public async Task<BlueOS.Core.Panorama.PanoramaDoSquad> LerPanoramaAsync(string? squad)
+    {
+        if (!_semRotaDoPanorama)
+        {
+            try { return await Get<BlueOS.Core.Panorama.PanoramaDoSquad>("api/panorama" + (string.IsNullOrWhiteSpace(squad) ? "" : "?squad=" + Uri.EscapeDataString(squad))); }
+            catch (InvalidOperationException e) when (e.Message.Contains("404")) { _semRotaDoPanorama = true; }
+        }
+        return await _panorama.MontarAsync(this, squad);
+    }
+    public async Task MarcarVistoAsync(string clienteSlug, string assinatura, bool visto)
+    {
+        if (_semRotaDoPanorama) _panorama.MarcarVisto(clienteSlug, assinatura, visto);
+        else await Envie(HttpMethod.Post, "api/panorama/visto", new { clienteSlug, assinatura, visto });
+        Avisar();
+    }
+    public async Task RegistrarACaminhoAsync(string clienteSlug, string acao)
+    {
+        if (_semRotaDoPanorama) _panorama.RegistrarACaminho(await ListarClientesAsync(), Parametros, clienteSlug, acao);
+        else await Envie(HttpMethod.Post, "api/panorama/a-caminho", new { clienteSlug, acao });
+        Avisar();
+    }
 }

@@ -1,8 +1,10 @@
 using System.Text.Json.Serialization;
 using BlueOS.Api.Dominio;
 using BlueOS.Api.Infra;
+using BlueOS.Core.Copy;
 using BlueOS.Core.Modelos;
 using BlueOS.Core.Motor;
+using BlueOS.Core.Publicar;
 
 /* ============================================================================
    A API .NET DO BLUE OS: a porta única para os dados (trilha B do plano).
@@ -28,10 +30,33 @@ builder.Services.AddHttpClient<SupabaseAuth>();
 builder.Services.AddSingleton<Sessoes>();
 builder.Services.AddScoped<Escopo>();
 builder.Services.AddScoped<Carteira>();
+builder.Services.AddScoped<PanoramaApi>();
 builder.Services.AddScoped<Automacao>();
 builder.Services.AddScoped<Escritas>();
 builder.Services.AddHttpClient("meta", h => h.Timeout = TimeSpan.FromSeconds(60));
 builder.Services.AddScoped<Meta>();
+/* a escrita na Meta (trilha B, 30/10/2026): a Graph, as credenciais, o registro, o executor e o publicador */
+builder.Services.AddHttpClient("meta-graph");
+builder.Services.AddSingleton<MetaGraph>();
+/* o MCP oficial da Meta (31/10/2026): a escrita dos squads em Meta:Mcp:Squads, com o token do squad */
+builder.Services.AddHttpClient("meta-mcp");
+builder.Services.AddSingleton<MetaMcp>();
+builder.Services.AddScoped<MetaEscrita>();
+builder.Services.AddScoped<Registro>();
+builder.Services.AddScoped<Executor>();
+builder.Services.AddScoped<Publicador>();
+/* a geração dentro da API (31/10/2026): as chaves, o modelo de texto, o Storage, o modelo de imagem, o Copy e o Designer */
+builder.Services.AddSingleton<Segredos>();
+builder.Services.AddSingleton<Ia>();
+builder.Services.AddHttpClient("supabase-storage");
+builder.Services.AddSingleton<SupabaseStorage>();
+builder.Services.AddHttpClient("imagem-ia");
+builder.Services.AddSingleton<ImagemIa>();
+builder.Services.AddScoped<CopyAgente>();
+builder.Services.AddScoped<Designer>();
+builder.Services.AddScoped<Setup>();
+builder.Services.AddScoped<MotorRodada>();
+builder.Services.AddScoped<Cs>();
 builder.Services.AddCors(c => c.AddDefaultPolicy(p => p.AllowAnyHeader().AllowAnyMethod().AllowAnyOrigin()));
 
 var app = builder.Build();
@@ -57,7 +82,7 @@ app.UseExceptionHandler(h => h.Run(async ctx =>
 }));
 
 /* ---- saúde: a API sobe mesmo sem banco configurado; o /health diz o que falta ---- */
-app.MapGet("/api/health", async (Db db, IConfiguration cfg) =>
+app.MapGet("/api/health", async (Db db, IConfiguration cfg, MetaGraph graph, MetaMcp mcp, Ia ia, ImagemIa imagem) =>
 {
     var banco = await db.ConfereAsync();
     return Results.Ok(new
@@ -69,6 +94,10 @@ app.MapGet("/api/health", async (Db db, IConfiguration cfg) =>
         producao_bloqueada = Db.RefProducao,
         supabase = string.IsNullOrWhiteSpace(cfg["Supabase:Url"]) ? "falta Supabase:Url" : cfg["Supabase:Url"],
         anon_key = string.IsNullOrWhiteSpace(cfg["Supabase:AnonKey"]) ? "falta Supabase:AnonKey" : "ok",
+        meta = graph.EstadoDaTrava(),
+        meta_mcp = mcp.Estado(),
+        ia = ia.Estado(),
+        imagem = imagem.Estado(),
     });
 });
 
@@ -168,12 +197,29 @@ api.MapGet("/clientes/{slug}/recomendacoes", async (string slug, HttpContext c, 
     return Results.Ok(new { ok = true, recomendacoes = await automacao.RecomendacoesAsync(slug), pode_aceitar = esc.PodeAplicarNaMeta });
 });
 
-api.MapPost("/clientes/{slug}/recomendacoes/{id}/decisao", async (string slug, string id, DecisaoPedido p, HttpContext c, Escopo escopo, Escritas escritas) =>
+/* ---- a decisão do gestor: negar, ou aceitar e APLICAR na Meta pelo executor (trilha B) ---- */
+api.MapPost("/clientes/{slug}/recomendacoes/{id}/decisao", async (string slug, string id, DecisaoPedido p, HttpContext c, Escopo escopo, Executor executor) =>
 {
     var esc = await escopo.DoUsuarioAsync(UserId(c));
     if (!await escopo.AlcancaAsync(esc, slug)) return Results.Json(new { error = "cliente fora do seu escopo" }, statusCode: 403);
-    var r = await escritas.DecidirAsync(esc, slug, id, p.Aceita, p.Motivo);
-    return r.Ok ? Results.Ok(new { ok = true }) : Results.Json(new { error = r.Erro }, statusCode: r.Status);
+    var (status, corpo) = await executor.DecidirAsync(esc, slug, id, p.Aceita, p.Motivo);
+    return Results.Json(corpo, statusCode: status);
+});
+
+/* ---- o Publicar do Start: a estrutura vira campanha, formulário, conjuntos e anúncios na Meta, pausados ---- */
+api.MapPost("/clientes/{slug}/publicar", async (string slug, PedidoDoStart p, HttpContext c, Escopo escopo, Carteira carteira, Publicador publicador, Registro registro) =>
+{
+    var esc = await escopo.DoUsuarioAsync(UserId(c));
+    var cli = await carteira.ObterAsync(esc, slug);
+    if (cli is null) return Results.Json(new { error = "cliente fora do seu escopo" }, statusCode: 403);
+    if (!esc.PodeAplicarNaMeta)
+    {
+        await registro.TrilhaAsync("criou_campanha", Guid.Parse(esc.UserId), slug, "negado", "cargo sem permissão de escrita na Meta", "campanha", null, null);
+        return Results.Json(new { error = "publicar na Meta é de head pra cima" }, statusCode: 403);
+    }
+    var r = await publicador.PublicarAsync(cli, p, Guid.Parse(esc.UserId));
+    var status = r.Ok || r.Simulado ? 200 : r.Codigo switch { "meta" => 502, "em_andamento" => 409, _ => 422 };
+    return Results.Json(r, statusCode: status);
 });
 
 api.MapPost("/clientes/{slug}/trafego", async (string slug, CardTrafegoPedido p, HttpContext c, Escopo escopo, Escritas escritas) =>
@@ -200,6 +246,110 @@ api.MapPatch("/clientes/{slug}/ficha", async (string slug, FichaPedido p, HttpCo
     if (!await escopo.AlcancaAsync(esc, slug)) return Results.Json(new { error = "cliente fora do seu escopo" }, statusCode: 403);
     var r = await escritas.FichaAsync(esc, slug, p);
     return r.Ok ? Results.Ok(new { ok = true }) : Results.Json(new { error = r.Erro }, statusCode: r.Status);
+});
+
+/* ---- o Agente de Copy dentro da API: gerar o lote e ajustar uma peça (31/10/2026) ---- */
+api.MapPost("/clientes/{slug}/copy/gerar", async (string slug, CopyPedido p, HttpContext c, Escopo escopo, Carteira carteira, CopyAgente copy) =>
+{
+    var esc = await escopo.DoUsuarioAsync(UserId(c));
+    var cli = await carteira.ObterAsync(esc, slug);
+    if (cli is null) return Results.Json(new { error = "cliente fora do seu escopo" }, statusCode: 403);
+    var itens = (p.Itens ?? []).Select(i => new ItemDoPedido((i.Tipo ?? "estatico").ToLowerInvariant(), (i.Funil ?? "mofu").ToLowerInvariant(), i.NPecas ?? i.N_Pecas ?? 3)).ToList();
+    var (status, corpo) = await copy.GerarAsync(cli, new PedidoDeCopy(itens, p.Briefing, p.Referencia, p.Nome), Guid.Parse(esc.UserId));
+    return Results.Json(corpo, statusCode: status);
+});
+
+api.MapPost("/clientes/{slug}/pecas/{id}/ajustar", async (string slug, string id, AjustePedido p, HttpContext c, Escopo escopo, Carteira carteira, CopyAgente copy) =>
+{
+    var esc = await escopo.DoUsuarioAsync(UserId(c));
+    var cli = await carteira.ObterAsync(esc, slug);
+    if (cli is null) return Results.Json(new { error = "cliente fora do seu escopo" }, statusCode: 403);
+    var (status, corpo) = await copy.AjustarAsync(cli, id, p.Instrucao ?? "", p.Campos, Guid.Parse(esc.UserId));
+    return Results.Json(corpo, statusCode: status);
+});
+
+/* ---- o setup do cliente e o motor, dentro da API (31/10/2026): o que sobrava no V1 ---- */
+api.MapPost("/clientes", async (NovoClientePedido p, HttpContext c, Escopo escopo, Setup setup) =>
+{
+    var esc = await escopo.DoUsuarioAsync(UserId(c));
+    if (!esc.PodeAplicarNaMeta) return Results.Json(new { error = "criar cliente é de coordenador pra cima." }, statusCode: 403);
+    var (status, corpo) = await setup.CriarClienteAsync(p.Nome ?? "", p.Squad, Guid.Parse(esc.UserId));
+    return Results.Json(corpo, statusCode: status);
+});
+
+api.MapPost("/clientes/{slug}/assets", async (string slug, AssetPedido p, HttpContext c, Escopo escopo, Carteira carteira, Setup setup) =>
+{
+    var esc = await escopo.DoUsuarioAsync(UserId(c));
+    var cli = await carteira.ObterAsync(esc, slug);
+    if (cli is null) return Results.Json(new { error = "cliente fora do seu escopo" }, statusCode: 403);
+    byte[] bytes;
+    try { bytes = Convert.FromBase64String(p.Base64 ?? ""); } catch { return Results.Json(new { error = "o arquivo não veio em base64 válido." }, statusCode: 400); }
+    var (status, corpo) = await setup.SubirAssetAsync(cli, (p.Tipo ?? "tela").Trim().ToLowerInvariant(), p.Nome ?? "arquivo", (p.Mime ?? "application/octet-stream").Trim().ToLowerInvariant(), bytes, Guid.Parse(esc.UserId));
+    return Results.Json(corpo, statusCode: status);
+});
+
+api.MapGet("/clientes/{slug}/assets/urls", async (string slug, HttpContext c, Escopo escopo, Carteira carteira, Setup setup) =>
+{
+    var esc = await escopo.DoUsuarioAsync(UserId(c));
+    var cli = await carteira.ObterAsync(esc, slug);
+    if (cli is null) return Results.Json(new { error = "cliente fora do seu escopo" }, statusCode: 403);
+    return Results.Ok(await setup.UrlsDosAssetsAsync(cli));
+});
+
+api.MapDelete("/clientes/{slug}/assets/{id}", async (string slug, string id, HttpContext c, Escopo escopo, Carteira carteira, Setup setup) =>
+{
+    var esc = await escopo.DoUsuarioAsync(UserId(c));
+    var cli = await carteira.ObterAsync(esc, slug);
+    if (cli is null) return Results.Json(new { error = "cliente fora do seu escopo" }, statusCode: 403);
+    var (status, corpo) = await setup.RemoverAssetAsync(cli, id, Guid.Parse(esc.UserId));
+    return Results.Json(corpo, statusCode: status);
+});
+
+api.MapPatch("/clientes/{slug}/conta", async (string slug, ContaPedido p, HttpContext c, Escopo escopo, Carteira carteira, Setup setup) =>
+{
+    var esc = await escopo.DoUsuarioAsync(UserId(c));
+    var cli = await carteira.ObterAsync(esc, slug);
+    if (cli is null) return Results.Json(new { error = "cliente fora do seu escopo" }, statusCode: 403);
+    var (status, corpo) = await setup.ConectarContaAsync(cli, p.AdAccountId, p.PageId, p.PageNome, p.Desconectar ?? false, Guid.Parse(esc.UserId));
+    return Results.Json(corpo, statusCode: status);
+});
+
+api.MapGet("/squads/{nome}/token", async (string nome, HttpContext c, Escopo escopo, Setup setup) =>
+{
+    var esc = await escopo.DoUsuarioAsync(UserId(c));
+    var squad = await setup.SquadAsync(nome);
+    if (squad is null) return Results.Json(new { error = $"squad {nome} não existe" }, statusCode: 404);
+    if (!esc.Global && (esc.SquadIds is null || !esc.SquadIds.Contains(squad.Value.Id ?? ""))) return Results.Json(new { error = $"o squad {nome} não está no seu escopo." }, statusCode: 403);
+    return Results.Ok(await setup.ConferirTokenAsync(squad.Value.Nome));
+});
+
+api.MapPost("/squads/{nome}/token", async (string nome, TokenPedido p, HttpContext c, Escopo escopo, Setup setup) =>
+{
+    var esc = await escopo.DoUsuarioAsync(UserId(c));
+    var squad = await setup.SquadAsync(nome);
+    if (squad is null) return Results.Json(new { error = $"squad {nome} não existe" }, statusCode: 404);
+    if (!esc.Global && (esc.SquadIds is null || !esc.SquadIds.Contains(squad.Value.Id ?? ""))) return Results.Json(new { error = $"o squad {nome} não está no seu escopo." }, statusCode: 403);
+    var (status, corpo) = await setup.GravarTokenAsync(squad.Value.Nome, p.Token ?? "", Guid.Parse(esc.UserId));
+    return Results.Json(corpo, statusCode: status);
+});
+
+api.MapPost("/clientes/{slug}/motor/rodar", async (string slug, HttpContext c, Escopo escopo, Carteira carteira, MotorRodada motor) =>
+{
+    var esc = await escopo.DoUsuarioAsync(UserId(c));
+    var cli = await carteira.ObterAsync(esc, slug);
+    if (cli is null) return Results.Json(new { error = "cliente fora do seu escopo" }, statusCode: 403);
+    var (status, corpo) = await motor.RodarAsync(cli, Guid.Parse(esc.UserId));
+    return Results.Json(corpo, statusCode: status);
+});
+
+/* ---- o Agente Designer dentro da API: as artes das peças escolhidas, uma chamada por peça (31/10/2026) ---- */
+api.MapPost("/clientes/{slug}/artes/gerar", async (string slug, ArtePedido p, HttpContext c, Escopo escopo, Carteira carteira, Designer designer) =>
+{
+    var esc = await escopo.DoUsuarioAsync(UserId(c));
+    var cli = await carteira.ObterAsync(esc, slug);
+    if (cli is null) return Results.Json(new { error = "cliente fora do seu escopo" }, statusCode: 403);
+    var (status, corpo) = await designer.GerarAsync(cli, new PedidoDeArte(p.PecaIds ?? [], p.Formatos ?? [], p.Template, p.DesignerLoteId, p.Encerrar ?? false, p.Ajuste), Guid.Parse(esc.UserId));
+    return Results.Json(corpo, statusCode: status);
 });
 
 api.MapPatch("/clientes/{slug}/pecas/{id}", async (string slug, string id, PecaPedido p, HttpContext c, Escopo escopo, Escritas escritas) =>
@@ -232,6 +382,76 @@ api.MapPatch("/motor/chave-geral", async (ChaveGeralPedido p, HttpContext c, Esc
     return r.Ok ? Results.Ok(new { ok = true }) : Results.Json(new { error = r.Erro }, statusCode: r.Status);
 });
 
+/* ============================================================================
+   O AGENTE DE CS (30/10/2026): a base das telas dos coordenadores. Só endpoints.
+   Porte de app/api/os/me e app/api/cs/* do V1 — ver Dominio/Cs.cs.
+   ============================================================================ */
+static IResult RespostaCs((object? Corpo, Cs.Erro? Erro) r) =>
+    r.Erro is null ? Results.Ok(r.Corpo) : Results.Json(r.Corpo ?? new { error = r.Erro.Mensagem }, statusCode: r.Erro.Http);
+
+
+/* ---- o Panorama: o mapa estelar do squad numa leitura ------------------------------ */
+api.MapGet("/panorama", async (string? squad, HttpContext c, Escopo escopo, PanoramaApi panorama) =>
+{
+    var esc = await escopo.DoUsuarioAsync(UserId(c));
+    return Results.Ok(await panorama.LerAsync(esc, UserId(c), squad));
+});
+api.MapPost("/panorama/visto", async (PanoramaApi.VistoPedido p, HttpContext c, Escopo escopo, PanoramaApi panorama) =>
+{
+    var esc = await escopo.DoUsuarioAsync(UserId(c));
+    if (!await escopo.AlcancaAsync(esc, p.ClienteSlug)) return Results.NotFound(new { error = "cliente fora do seu alcance" });
+    await panorama.MarcarVistoAsync(UserId(c), p);
+    return Results.Ok(new { ok = true });
+});
+api.MapPost("/panorama/a-caminho", async (PanoramaApi.ACaminhoPedido p, HttpContext c, Escopo escopo, PanoramaApi panorama) =>
+{
+    var esc = await escopo.DoUsuarioAsync(UserId(c));
+    if (!await escopo.AlcancaAsync(esc, p.ClienteSlug)) return Results.NotFound(new { error = "cliente fora do seu alcance" });
+    await panorama.RegistrarACaminhoAsync(UserId(c), p);
+    return Results.Ok(new { ok = true });
+});
+
+api.MapGet("/me", async (HttpContext c, Cs cs) =>
+    await cs.MeAsync(UserId(c)) is { } me ? Results.Ok(me) : Results.Json(new { error = "usuário não encontrado" }, statusCode: 404));
+
+/* a carteira (lista) ou, com ?cliente=, o dossiê completo daquele cliente no squad pedido/principal */
+api.MapGet("/cs/carteira", async (string? cliente, string? squad, string? grupo, HttpContext c, Escopo escopo, Cs cs) =>
+{
+    var esc = await escopo.DoUsuarioAsync(UserId(c));
+    if (!string.IsNullOrWhiteSpace(cliente)) return RespostaCs(await cs.DossieAsync(esc, cliente, squad));
+    return Results.Ok(await cs.CarteiraAsync(esc, squad, grupo));
+});
+
+api.MapGet("/cs/risco", async (string? todos, HttpContext c, Escopo escopo, Cs cs) =>
+    Results.Ok(await cs.RiscoAsync(await escopo.DoUsuarioAsync(UserId(c)), todos == "1")));
+
+api.MapGet("/cs/anotacao", async (string? cliente_id, HttpContext c, Escopo escopo, Cs cs) =>
+    RespostaCs(await cs.AnotacoesAsync(await escopo.DoUsuarioAsync(UserId(c)), cliente_id)));
+api.MapPost("/cs/anotacao", async (AnotacaoPedido p, HttpContext c, Escopo escopo, Cs cs) =>
+    RespostaCs(await cs.AnotarAsync(await escopo.DoUsuarioAsync(UserId(c)), p.ClienteId, p.Texto)));
+api.MapPatch("/cs/anotacao", async (AnotacaoPedido p, HttpContext c, Escopo escopo, Cs cs) =>
+    RespostaCs(await cs.ArquivarAnotacaoAsync(await escopo.DoUsuarioAsync(UserId(c)), p.AnotacaoId)));
+
+api.MapGet("/cs/upsell-vendido", async (string? cliente_id, HttpContext c, Escopo escopo, Cs cs) =>
+    RespostaCs(await cs.UpsellsVendidosAsync(await escopo.DoUsuarioAsync(UserId(c)), cliente_id)));
+api.MapPost("/cs/upsell-vendido", async (UpsellPedido p, HttpContext c, Escopo escopo, Cs cs) =>
+    RespostaCs(await cs.RegistrarUpsellAsync(await escopo.DoUsuarioAsync(UserId(c)), p.ClienteId, p.UpsellSlug, p.UpsellNome, p.Valor, p.VendidoEm, p.Observacao)));
+api.MapPatch("/cs/upsell-vendido", async (UpsellPedido p, HttpContext c, Escopo escopo, Cs cs) =>
+    RespostaCs(await cs.ArquivarUpsellAsync(await escopo.DoUsuarioAsync(UserId(c)), p.VendaId)));
+
+api.MapPatch("/cs/passo-decisao", async (DecisaoHumanaPedido p, HttpContext c, Escopo escopo, Cs cs) =>
+    RespostaCs(await cs.DecidirPassoAsync(await escopo.DoUsuarioAsync(UserId(c)), p.AnaliseId, p.Indice, p.Status, p.Justificativa)));
+api.MapPatch("/cs/promessa-status", async (DecisaoHumanaPedido p, HttpContext c, Escopo escopo, Cs cs) =>
+    RespostaCs(await cs.DecidirPromessaAsync(await escopo.DoUsuarioAsync(UserId(c)), p.AnaliseId, p.Indice, p.Status, p.Justificativa)));
+
+api.MapPost("/cs/sem-performance", async (SemPerformancePedido p, HttpContext c, Escopo escopo, Cs cs) =>
+    RespostaCs(await cs.SemPerformanceAsync(await escopo.DoUsuarioAsync(UserId(c)), p.ClienteId, p.SquadId, p.Ligado)));
+
+api.MapGet("/cs/membros", async (string? cliente_id, HttpContext c, Escopo escopo, Cs cs) =>
+    RespostaCs(await cs.MembrosAsync(await escopo.DoUsuarioAsync(UserId(c)), cliente_id)));
+api.MapPost("/cs/passo", async (PassoPedido p, HttpContext c, Escopo escopo, Cs cs, CancellationToken ct) =>
+    RespostaCs(await cs.PassoParaTaskAsync(await escopo.DoUsuarioAsync(UserId(c)), p, ct)));
+
 app.Run();
 
 public sealed record LoginPedido(string Login, string Senha);
@@ -241,4 +461,17 @@ public sealed record ModoPedido(ModoDeExecucao Modo);
 public sealed record ChaveGeralPedido(bool Ligada, string? Motivo);
 public sealed record DecisaoPedido(bool Aceita, string? Motivo);
 public sealed record PecaPedido(bool Aprovada);
+public sealed record ItemDeCopyPedido(string? Tipo, string? Funil, int? NPecas, int? N_Pecas);
+public sealed record CopyPedido(List<ItemDeCopyPedido>? Itens, string? Briefing, string? Referencia, string? Nome);
+public sealed record AjustePedido(string? Instrucao, List<string>? Campos);
+public sealed record NovoClientePedido(string? Nome, string? Squad);
+public sealed record AssetPedido(string? Tipo, string? Nome, string? Mime, string? Base64);
+public sealed record ContaPedido(string? AdAccountId, string? PageId, string? PageNome, bool? Desconectar);
+public sealed record TokenPedido(string? Token);
+public sealed record ArtePedido(List<string>? PecaIds, List<string>? Formatos, string? Template, string? DesignerLoteId, bool? Encerrar, string? Ajuste);
 public sealed record FichaPedido(FichaCadastral? Ficha, Icp? Icp, Produto? Produto, Estrategia? Estrategia);
+public sealed record AnotacaoPedido([property: JsonPropertyName("cliente_id")] string? ClienteId, string? Texto, [property: JsonPropertyName("anotacao_id")] string? AnotacaoId);
+public sealed record UpsellPedido([property: JsonPropertyName("cliente_id")] string? ClienteId, [property: JsonPropertyName("upsell_slug")] string? UpsellSlug, [property: JsonPropertyName("upsell_nome")] string? UpsellNome,
+    System.Text.Json.JsonElement? Valor, [property: JsonPropertyName("vendido_em")] string? VendidoEm, string? Observacao, [property: JsonPropertyName("venda_id")] string? VendaId);
+public sealed record DecisaoHumanaPedido([property: JsonPropertyName("analise_id")] string? AnaliseId, int? Indice, string? Status, string? Justificativa);
+public sealed record SemPerformancePedido([property: JsonPropertyName("cliente_id")] string? ClienteId, [property: JsonPropertyName("squad_id")] string? SquadId, bool? Ligado);

@@ -686,4 +686,10 @@ public sealed class V1Api : IBlueApi, IDisposable
 
     public Task SimularVeiculacaoAsync(Cliente c, int dias) =>
         throw new NotSupportedException("a veiculação é real no V1: ative a campanha no Gerenciador e a carga diária lê a Meta às 07:30 UTC.");
+
+    /* ---- panorama: montado no app sobre a carteira do V1 ------------------------- */
+    readonly PanoramaLocal _panorama = new("você");
+    public Task<BlueOS.Core.Panorama.PanoramaDoSquad> LerPanoramaAsync(string? squad) => _panorama.MontarAsync(this, squad);
+    public Task MarcarVistoAsync(string clienteSlug, string assinatura, bool visto) { _panorama.MarcarVisto(clienteSlug, assinatura, visto); Avisar(); return Task.CompletedTask; }
+    public async Task RegistrarACaminhoAsync(string clienteSlug, string acao) { _panorama.RegistrarACaminho(await ListarClientesAsync(), Parametros, clienteSlug, acao); Avisar(); }
 }
