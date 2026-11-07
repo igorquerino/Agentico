@@ -193,7 +193,7 @@ public sealed class PanoramaApi(Db db, Carteira carteira, Meta meta, ILogger<Pan
                 if (!porSlug.TryGetValue(e.Slug, out var x) || x.Assinatura != a.Assinatura)
                     sqls.Add(Sql.Fmt($"""
                         insert into public.trafego_panorama_alerta (cliente_slug, assinatura, gravidade, titulo, desde, atualizado_em)
-                        values ({e.Slug}, {a.Assinatura}, {(int)a.Gravidade}, {a.Titulo}, {(object?)a.Desde ?? DBNull.Value}, now())
+                        values ({e.Slug}, {a.Assinatura}, {(int)a.Gravidade}, {a.Titulo}, {a.Desde}, now())
                         on conflict (cliente_slug) do update set assinatura = excluded.assinatura, gravidade = excluded.gravidade, titulo = excluded.titulo, desde = excluded.desde, atualizado_em = now()
                         """));
             }
