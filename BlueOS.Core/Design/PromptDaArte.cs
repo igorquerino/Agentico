@@ -55,7 +55,10 @@ public static class PromptDaArte
     static List<string> Lista(IEnumerable<string>? v, int teto = TetoLista) => (v ?? []).Select(Limpar).Where(x => x != "").Take(teto).ToList();
     static IEnumerable<string> Itens(string? texto) => string.IsNullOrWhiteSpace(texto) ? [] : texto.Split(['\n', ';'], StringSplitOptions.RemoveEmptyEntries).Select(x => x.Trim().TrimStart('-', '•', ' ')).Where(x => x != "");
 
-    public static string ContextoVisual(Cliente c)
+    /// <summary>O contexto do cliente para o prompt e o tema. `comApoio: false` tira o bloco ELEMENTOS DE APOIO: é o texto que o
+    /// filtro de objeto (ObjetoProibido) lê como "do cliente", e aquele bloco cita a lista proibida (cadeado, escudo, cofre),
+    /// o que liberaria justamente esses objetos.</summary>
+    public static string ContextoVisual(Cliente c, bool comApoio = true)
     {
         var linhas = new List<string>();
         var p = c.Produto; var i = c.Icp;
@@ -71,7 +74,7 @@ public static class PromptDaArte
         var dores = Lista(i.DoresPrincipais); if (dores.Count > 0) linhas.Add($"- Dores do público: {string.Join("; ", dores)}");
         var desejos = Lista(i.DesejosPrincipais); if (desejos.Count > 0) linhas.Add($"- O que o público quer: {string.Join("; ", desejos)}");
         if (linhas.Count == 0) return "";
-        return $"O CLIENTE — é pra ELE que esta peça é feita (use pra escolher o ambiente, a cena, os objetos e as pessoas; ⛔ nada disto vira texto desenhado na arte):\n{string.Join("\n", linhas)}\nA imagem tem de ser reconhecível como deste negócio: o ambiente, os objetos e as pessoas são os do mundo dele, não os de uma empresa qualquer.{ElementosDeApoio(c)}";
+        return $"O CLIENTE — é pra ELE que esta peça é feita (use pra escolher o ambiente, a cena, os objetos e as pessoas; ⛔ nada disto vira texto desenhado na arte):\n{string.Join("\n", linhas)}\nA imagem tem de ser reconhecível como deste negócio: o ambiente, os objetos e as pessoas são os do mundo dele, não os de uma empresa qualquer.{(comApoio ? ElementosDeApoio(c) : "")}";
     }
 
     public static string ElementosDeApoio(Cliente c)
@@ -88,7 +91,8 @@ public static class PromptDaArte
     public static string DescreverIcp(Cliente c)
     {
         var partes = new List<string>();
-        if (!string.IsNullOrWhiteSpace(c.Icp.Tipo)) partes.Add(c.Icp.Tipo);
+        /* o tipo só entra quando o ICP tem outro dado: sozinho ele pode ser o padrão da leitura ("B2B"), não um fato do cliente */
+        if (!string.IsNullOrWhiteSpace(c.Icp.Tipo) && Copy.PromptDoCopy.IcpTemDado(c.Icp)) partes.Add(c.Icp.Tipo);
         if (!string.IsNullOrWhiteSpace(c.Icp.Segmento)) partes.Add(c.Icp.Segmento!.Trim());
         var dores = c.Icp.DoresPrincipais.Where(d => !string.IsNullOrWhiteSpace(d)).Take(2).ToList();
         if (dores.Count > 0) partes.Add($"enfrenta: {string.Join("; ", dores)}");
@@ -345,15 +349,19 @@ public static class PromptDaArte
         };
     }
 
+    /// <summary>A área que o prompt manda deixar vazia: a MESMA que a diagramação ocupa (Diagramacao.Centralizado, com os corpos
+    /// que o Compositor desenha), do topo do texto (faixa da logo + respiro) ao fim do botão.</summary>
+    public static (int Inicio, int Altura) AreaReservada(CopyDaArte copy, string formato)
+    {
+        var l = Diagramacao.Centralizado(formato, copy.Head, copy.Sub, copy.Cta, "#ffffff", "#ffffff", "#ffffff", "#000000");
+        var (y, h) = Diagramacao.Bloco(l);
+        return ((int)Math.Round(y * l.Altura), (int)Math.Ceiling(h * l.Altura));
+    }
+
     static string BlocoAreaReservada(CopyDaArte copy, string formato)
     {
-        var story = formato == "story";
-        var corpoHead = story ? 72 : 51; var corpoSub = story ? 48 : 27; var corpoCta = story ? 40 : 31;
-        const double larguraDaColuna = 1080 * 0.92, caractere = 0.56;
-        int Linhas(string t, int corpo) => Math.Max(1, (int)Math.Ceiling(t.Trim().Length * caractere * corpo / larguraDaColuna));
-        var lh = Linhas(copy.Head, corpoHead); var ls = copy.Sub.Trim() == "" ? 0 : Linhas(copy.Sub, corpoSub);
-        var total = (int)Math.Round(lh * corpoHead * 1.12) + (ls > 0 ? 28 + (int)Math.Round(ls * corpoSub * 1.5) : 0) + 34 + (int)Math.Round(64.0 * corpoCta / 30);
-        return $"ÁREA RESERVADA (fica VAZIA — ⛔ não desenhe nada nela):\n- Altura aproximada a manter limpa: {total} px, começando logo abaixo da faixa de respiro do topo.\n- Ela é só o FUNDO continuando: tonalidade UNIFORME, sem detalhe visual competindo, sem elemento gráfico, sem forma e sem texto. É onde o software vai pousar a tipografia depois.\n- ⛔ Não desenhe caixas, molduras, retângulos, tarjas nem placeholders marcando essa área. Ela é só o fundo, contínuo com o resto da peça.";
+        var (inicio, total) = AreaReservada(copy, formato);
+        return $"ÁREA RESERVADA (fica VAZIA — ⛔ não desenhe nada nela):\n- Altura aproximada a manter limpa: {total} px, começando logo abaixo da faixa de respiro do topo (a partir de {inicio} px), na largura quase toda, centralizada.\n- Ela é só o FUNDO continuando: tonalidade UNIFORME, sem detalhe visual competindo, sem elemento gráfico, sem forma e sem texto. É onde o software vai pousar a tipografia depois.\n- ⛔ Não desenhe caixas, molduras, retângulos, tarjas nem placeholders marcando essa área. Ela é só o fundo, contínuo com o resto da peça.";
     }
 
     /// <summary>O prompt da casa (buildPrompt + buildDiagramacaoCentralizada), SEM TEXTO, com a cena do rodízio e o tema.</summary>
@@ -462,17 +470,29 @@ public static class PromptDaArte
     public static string CaminhoNoStorage(string? squadId, string slug, int loteNumero, string loteId, string funil, int numero, string formato) =>
         $"{(string.IsNullOrEmpty(squadId) ? "sem-squad" : squadId)}/{slug}/lote-{loteNumero}-{loteId[..Math.Min(8, loteId.Length)]}/{NomeDoArquivo(funil, numero, formato)}";
 
-    /// <summary>As camadas de texto (`designer_pecas.texto_layout`), no formato que o estúdio do V1 lê.</summary>
-    public static string TextoLayout(Layout layout, string corDestaque, string corBotao)
+    /// <summary>As camadas de texto (`designer_pecas.texto_layout`), no formato que o estúdio do V1 lê: `tamanho` em fração da
+    /// LARGURA (texto-camada.ts), e o plano de contraste como camada `tipo: "degrade"` (camada-degrade.ts), para o Estúdio
+    /// reabrir sobre a `arte_sem_texto` com o mesmo contraste do PNG final.</summary>
+    public static string TextoLayout(Layout layout, string corDestaque, string corBotao, DegradeDoTexto? degrade = null)
     {
+        var paraLargura = (double)layout.Altura / layout.Largura;
         var itens = layout.Caixas.Select(c => new Dictionary<string, object?>
         {
             ["id"] = Guid.NewGuid().ToString("n")[..14], ["papel"] = c.Papel, ["texto"] = c.Texto, ["x"] = c.X, ["y"] = c.Y, ["w"] = c.W,
-            ["tamanho"] = c.Tamanho, ["peso"] = c.Peso, ["fonte"] = "poppins", ["cor"] = c.Cor, ["alinhamento"] = c.Alinhamento == "centro" ? "centro" : "esquerda",
+            ["tamanho"] = Math.Round(c.Tamanho * paraLargura, 5), ["peso"] = c.Peso, ["fonte"] = "poppins", ["cor"] = c.Cor, ["alinhamento"] = c.Alinhamento == "centro" ? "centro" : "esquerda",
             ["entrelinha"] = Diagramacao.Entrelinha, ["destaques"] = c.Destaques, ["corDestaque"] = corDestaque,
             ["fundo"] = c.Papel == "cta" ? corBotao : null, ["raio"] = c.Papel == "cta" ? 0.06 : 0, ["icone"] = c.Papel == "cta" ? "seta" : null, ["linhasDoModelo"] = c.Linhas.Count,
         }).ToList<object>();
-        itens.Add(new Dictionary<string, object?> { ["tipo"] = "diagramacao-da-api", ["versao"] = 1, ["caixas"] = layout.Caixas.ToDictionary(c => c.Papel, c => new { x0 = c.X, y0 = c.Y, x1 = c.X + c.W, linhas = c.Linhas.Count }) });
+        if (degrade is not null)
+            itens.Add(new Dictionary<string, object?>
+            {
+                ["id"] = "d" + Guid.NewGuid().ToString("n")[..10], ["tipo"] = "degrade",
+                ["x"] = Math.Round(degrade.X, 5), ["y"] = Math.Round(degrade.Y, 5), ["w"] = Math.Round(degrade.W, 5), ["h"] = Math.Round(degrade.H, 5),
+                ["de"] = new { cor = degrade.Cor, opacidade = degrade.OpacidadeDe }, ["para"] = new { cor = degrade.Cor, opacidade = degrade.OpacidadePara },
+                ["inicio"] = new { x = Math.Round(degrade.InicioX, 4), y = Math.Round(degrade.InicioY, 4) }, ["fim"] = new { x = Math.Round(degrade.FimX, 4), y = Math.Round(degrade.FimY, 4) },
+                ["oculto"] = false,
+            });
+        itens.Add(new Dictionary<string, object?> { ["tipo"] = "diagramacao-da-api", ["versao"] = 2, ["caixas"] = layout.Caixas.ToDictionary(c => c.Papel, c => new { x0 = c.X, y0 = c.Y, x1 = c.X + c.W, linhas = c.Linhas.Count }) });
         return JsonSerializer.Serialize(itens, new JsonSerializerOptions { Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping });
     }
 }

@@ -4,50 +4,29 @@ using BlueOS.Core.Modelos;
 namespace BlueOS.Core.Copy;
 
 /* ============================================================================
-   O CRIVO DA COPY (lib/copy/crivo.ts, em código): confere a peça contra a régua
-   V8 e as regras FECHADAS do vault. Reprovada regera UMA vez; se reprova de
-   novo, a peça existe com crivo_ok = false e a publicação não a sobe.
+   O CRIVO DA PUBLICAÇÃO (lib/copy/crivo.ts, em código, sem o vault à mão):
+   confere a peça contra a régua V8 em código (R1, R3, R10, peça completa) e as
+   três proibições fechadas do vault, com OS MESMOS marcadores e a mesma
+   declaração do crivo da geração (PromptDoCopy.MotivoDaProibicao) e a etapa
+   que cada proibição declara no vault. Assim os dois portões dizem a mesma
+   coisa: o que a geração aprovou a publicação não recusa, e o que o vault
+   reprovaria a publicação não deixa passar.
    ============================================================================ */
 public static class Crivo
 {
-    static readonly Regex Travessao = new(@"\s[—–-]\s|—", RegexOptions.Compiled);
-    static readonly Regex Negacao = new(@"^(n[aã]o|nunca|pare de|chega de|sem |jamais)\b", RegexOptions.IgnoreCase | RegexOptions.Compiled);
-    static readonly Regex Reuniao = new(@"reuni[aã]o|agend|call|bate-papo|conversa com", RegexOptions.IgnoreCase | RegexOptions.Compiled);
-
     /// <summary>Os problemas da peça, em texto. Vazio = passou.</summary>
     public static List<string> Conferir(PecaDeCopy p, string? nomeDaMarca)
     {
-        var problemas = new List<string>();
-        var tudo = $"{p.Headline}\n{p.Sub}\n{p.Cta}";
-
-        /* R10: travessão é marca de texto de IA. */
-        if (Travessao.IsMatch(tudo)) problemas.Add("R10: travessão na peça");
-
-        /* nunca_negacao_headline (vault, fechada por decisão). */
-        if (Negacao.IsMatch(p.Headline.Trim()) || p.FormasHeadline.Contains("negacao"))
-            problemas.Add("nunca_negacao_headline: a headline abre com negação");
-
-        if (p.Etapa == Etapa.MOFU)
+        var etapa = p.Etapa.ToString();
+        var problemas = PromptDoCopy.RegrasDaRegua(p.Headline, p.Sub, p.Cta, etapa, p.Tipo == TipoPeca.Video ? "video" : "estatico", nomeDaMarca);
+        var peca = new PecaDoModelo(p.Headline, p.Sub, p.Cta, p.AnguloHeadline, p.FormasHeadline, p.PapelSub, p.TipoCta);
+        var declaracao = new Declaracao(p.AnguloHeadline, p.FormasHeadline, p.PapelSub, p.TipoCta);
+        foreach (var chave in PromptDoCopy.ChavesDoCrivo)
         {
-            /* nunca_reuniao_cta_mofu (vault, fechada, pareado). */
-            if (Reuniao.IsMatch(p.Cta) || p.TipoCta == "agendar_solicitar")
-                problemas.Add("nunca_reuniao_cta_mofu: pedido de reunião no CTA do MOFU");
-            /* nunca_prova_sub_mofu (vault, fechada por decisão, Igor 11/10). */
-            if (p.PapelSub == "prova") problemas.Add("nunca_prova_sub_mofu: prova na SUB do MOFU");
+            var etapas = PromptDoCopy.EtapasDaProibicao(chave);
+            if (etapas.Count > 0 && !etapas.Contains(etapa)) continue;
+            if (PromptDoCopy.MotivoDaProibicao(chave, peca, declaracao) is { } motivo) problemas.Add($"{chave}: {motivo}");
         }
-
-        /* R1: TOFU não cita produto, solução ou marca. */
-        if (p.Etapa == Etapa.TOFU && !string.IsNullOrWhiteSpace(nomeDaMarca)
-            && tudo.Contains(nomeDaMarca, StringComparison.OrdinalIgnoreCase))
-            problemas.Add("R1: o TOFU cita a marca");
-
-        /* R3: CTA de estático é texto de botão, até 4 palavras. */
-        if (p.Tipo == TipoPeca.Estatico && p.Cta.Split(' ', StringSplitOptions.RemoveEmptyEntries).Length > 4)
-            problemas.Add("R3: CTA de estático com mais de 4 palavras");
-
-        if (string.IsNullOrWhiteSpace(p.Headline) || string.IsNullOrWhiteSpace(p.Sub) || string.IsNullOrWhiteSpace(p.Cta))
-            problemas.Add("peça incompleta: abertura, fecho e CTA são obrigatórios");
-
         return problemas;
     }
 }
@@ -105,7 +84,6 @@ public static class GeradorDemo
                 var sintoma = voc.Sintomas[i % voc.Sintomas.Count];
                 var mecanismoDaDor = voc.MecanismosDaDor[i % voc.MecanismosDaDor.Count];
                 var ganho = ganhos[i % ganhos.Count];
-                var prova = voc.Provas[i % voc.Provas.Count];
                 var termo = voc.TermosReais[(i * 2) % voc.TermosReais.Count];
 
                 var peca = new PecaDeCopy
@@ -120,7 +98,7 @@ public static class GeradorDemo
                     Icp = icp,
                     Hipotese = $"ângulo {Estruturas.Legivel(angulo)} sobre \"{Curto(dor)}\" para {icp}",
                 };
-                Escrever(peca, item.Etapa, angulo, papel, tipoCta, icp, dor, sintoma, mecanismoDaDor, ganho, prova, termo, marca, promessa, voc);
+                Escrever(peca, item.Etapa, angulo, papel, tipoCta, icp, dor, sintoma, mecanismoDaDor, ganho, termo, marca, promessa, voc);
 
                 var problemas = Crivo.Conferir(peca, marca);
                 if (problemas.Count > 0)
@@ -132,7 +110,7 @@ public static class GeradorDemo
                     var cta2 = o.Cta.FirstOrDefault(x => x != "agendar_solicitar") ?? tipoCta;
                     peca.AnguloHeadline = angulo2; peca.PapelSub = papel2; peca.TipoCta = cta2;
                     peca.FormasHeadline.Clear();
-                    Escrever(peca, item.Etapa, angulo2, papel2, cta2, icp, dor, sintoma, mecanismoDaDor, ganho, prova, termo, marca, promessa, voc);
+                    Escrever(peca, item.Etapa, angulo2, papel2, cta2, icp, dor, sintoma, mecanismoDaDor, ganho, termo, marca, promessa, voc);
                     problemas = Crivo.Conferir(peca, marca);
                 }
                 peca.CrivoOk = problemas.Count == 0;
@@ -145,9 +123,17 @@ public static class GeradorDemo
 
     static string Curto(string s) => s.Length > 48 ? s[..48] + "…" : s;
     static string Cap(string s) => string.IsNullOrEmpty(s) ? s : char.ToUpperInvariant(s[0]) + s[1..];
+    /// <summary>A frase no meio de outra: só a primeira letra desce, e nem ela quando a primeira palavra é sigla (CRM, SLA).
+    /// Baixar a frase inteira escrevia "whatsapp" e "crm".</summary>
+    static string Min(string s)
+    {
+        if (string.IsNullOrEmpty(s)) return s;
+        var primeira = s.Split(' ')[0];
+        return primeira.Length > 1 && primeira.All(ch => !char.IsLetter(ch) || char.IsUpper(ch)) ? s : char.ToLowerInvariant(s[0]) + s[1..];
+    }
 
     static void Escrever(PecaDeCopy p, Etapa etapa, string angulo, string papel, string tipoCta, string icp,
-        string dor, string sintoma, string mecanismoDaDor, string ganho, string prova, string termo, string marca, string? promessa, VocabularioDoNicho voc)
+        string dor, string sintoma, string mecanismoDaDor, string ganho, string termo, string marca, string? promessa, VocabularioDoNicho voc)
     {
         var video = p.Tipo == TipoPeca.Video;
         /* ---- a abertura (HEAD / HOOK): carrega C1 (identificação, via B) ------ */
@@ -156,13 +142,14 @@ public static class GeradorDemo
             "dor" => Cap(sintoma),
             "pergunta" => etapa == Etapa.TOFU
                 ? $"Quantas vezes por mês {voc.IcpPlural} vivem isto: {sintoma}?"
-                : $"Quantos {termo}s a sua operação perde quando {dor.ToLowerInvariant()}?",
-            "comando" => $"Resolva {termo} antes que {Curto(dor).ToLowerInvariant()} vire rotina",
+                : $"O que a sua operação perde em {termo} quando {Min(dor)}?",
+            "comando" => $"Resolva {termo} antes que {Min(Curto(dor))} vire rotina",
             "desejo_beneficio" => Cap(ganho),
             "curiosidade" => $"O número de {termo} que {voc.IcpPlural} não olham, e que explica o mês fraco",
-            "prova_social" => Cap(prova),
-            "oferta" => $"{marca}: implantação em 15 dias, com {ganho.Split(',')[0]}",
-            "urgencia" => $"Últimas 5 vagas de implantação de {marca} neste mês",
+            /* o demo não inventa número, prazo nem vaga sob a marca do cliente: a prova é a promessa que ele mesmo declarou */
+            "prova_social" => $"{marca}: {promessa ?? ganho}",
+            "oferta" => $"{marca}, com {ganho.Split(',')[0]}",
+            "urgencia" => $"Comece este mês: {ganho.Split(',')[0]}",
             "afirmacao_generica" => $"{Cap(termo)} com dono, prazo e número, todo dia",
             _ => Cap(sintoma),
         };
@@ -173,15 +160,15 @@ public static class GeradorDemo
         {
             Etapa.TOFU => Cap(mecanismoDaDor) + ".",
             Etapa.MOFU => $"{marca} {ganho}.",
-            _ => $"{Cap(prova)}. {marca}: {promessa ?? ganho}.",
+            _ => $"{marca}: {promessa ?? ganho}.",
         };
         p.Sub = papel switch
         {
             "explica_como_funciona" => etapa == Etapa.TOFU ? Cap(mecanismoDaDor) + "." : $"Como funciona: {marca} {ganho}.",
             "detalha_o_ganho" => etapa == Etapa.TOFU ? Cap(mecanismoDaDor) + "." : $"{Cap(ganho)}, com {marca}.",
             "contexto_da_dor" => Cap(mecanismoDaDor) + (etapa == Etapa.TOFU ? "." : $" {marca} muda isso."),
-            "instrucao" => etapa == Etapa.TOFU ? $"Veja o sinal antes do mês fechar: {mecanismoDaDor}." : $"Comece pelo {termo}: {marca} {ganho}.",
-            "oferta" => $"{marca} com implantação em 15 dias e {ganho}.",
+            "instrucao" => etapa == Etapa.TOFU ? $"Veja o sinal antes do mês fechar: {mecanismoDaDor}." : $"Comece por {termo}: {marca} {ganho}.",
+            "oferta" => $"{marca} com {ganho}.",
             "prova" => mecanismoDaSolucao,
             "reforca_o_publico" => $"Para {voc.IcpPlural} que vivem isto todo mês. " + (etapa == Etapa.TOFU ? "" : $"{marca} {ganho}."),
             "fragmento" => etapa == Etapa.TOFU ? $"{Cap(mecanismoDaDor)}." : $"{Cap(ganho)}. {marca}.",

@@ -44,17 +44,25 @@ public sealed class Escritas(Db db, ILogger<Escritas> log)
     /// <summary>mql/route.ts do V1: um teto absurdo faz o motor nunca cortar nada.</summary>
     public const decimal TetoMqlMaximoReais = 100_000m;
 
-    /// <summary>Aprovar uma peça de copy é decisão de gente (AD-5): copy_peca.aprovada, só se a peça é deste cliente.</summary>
+    /// <summary>Aprovar uma peça de copy é decisão de gente (AD-5): copy_peca.aprovada, só se a peça é deste cliente. O PORTÃO do
+    /// crivo vale aqui também: só aprova a peça com `crivo_ok = true` (reprovada ou SEM crivo, nulo, não passa); desaprovar, sempre.</summary>
     public async Task<ResultadoDaEscrita> AprovarPecaAsync(string slug, string pecaId, bool aprovada)
     {
         if (!Guid.TryParse(pecaId, out var id)) return new(false, "id da peça inválido");
+        var peca = await db.UmAsync(Sql.Fmt($"""
+            select p.crivo_ok from public.copy_peca p join public.copy_lote_item i on i.item_id = p.item_id join public.copy_lote l on l.lote_id = i.lote_id join public.clientes c on c.cliente_id = l.cliente_id
+            where p.peca_id = {id} and c.cliente_slug = {slug}
+            """), r => new { CrivoOk = r.B("crivo_ok") });
+        if (peca is null) return new(false, "a peça não é deste cliente", 404);
+        if (aprovada && !Core.Copy.PromptDoCopy.CrivoLibera(peca.CrivoOk))
+            return new(false, peca.CrivoOk is null ? "a peça não passou pelo crivo (sem versão do vault): não se aprova peça sem crivo." : "a peça não passou no crivo: ajuste antes de aprovar.", 409);
         var ok = await db.ListaAsync(Sql.Fmt($"""
             update public.copy_peca p set aprovada = {aprovada}
             from public.copy_lote_item i join public.copy_lote l on l.lote_id = i.lote_id join public.clientes c on c.cliente_id = l.cliente_id
-            where p.item_id = i.item_id and p.peca_id = {id} and c.cliente_slug = {slug}
+            where p.item_id = i.item_id and p.peca_id = {id} and c.cliente_slug = {slug} and (not {aprovada} or p.crivo_ok is true)
             returning p.peca_id::text as peca_id
             """));
-        return ok.Count == 0 ? new(false, "a peça não é deste cliente", 404) : Feito;
+        return ok.Count == 0 ? new(false, "a peça mudou enquanto era aprovada: confira o crivo e tente de novo.", 409) : Feito;
     }
 
     /* ---- o corpo: ausente, null ou valor --------------------------------------- */
