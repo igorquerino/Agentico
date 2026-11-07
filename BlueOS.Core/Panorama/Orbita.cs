@@ -19,7 +19,12 @@ public static class Orbita
     public const int AnelDosSaudaveis = 4;
     /// <summary>Raios do mock, em px, para um mapa de 700. A tela escala pelo tamanho real.</summary>
     public static readonly IReadOnlyList<int> RaiosDoMock = [0, 135, 195, 255, 335];
+    /// <summary>O lado do mapa do mock, em px: é por ele que os raios viram fração do mapa real.</summary>
+    public const double LadoDoMock = 700;
     const double TamanhoDaEstrela = 14, Folga = 10;
+
+    /// <summary>O raio do anel como fração do lado do mapa (a tela multiplica pela variável --mapa). Um lugar só para a geometria.</summary>
+    public static double Fator(int anel) => RaiosDoMock[anel] / LadoDoMock;
 
     /// <summary>Quantas estrelas cabem numa volta do anel sem encostar, para o raio dado.</summary>
     public static int Capacidade(int anel, double raioPx) => Math.Max(1, (int)Math.Floor(2 * Math.PI * raioPx / (TamanhoDaEstrela + Folga)));

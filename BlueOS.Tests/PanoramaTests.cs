@@ -135,12 +135,13 @@ public class PanoramaTests
         parou.Conta.TokenValido = false; parou.Conta.TokenConferidoEm = Agora.AddHours(-2);
         var frio = EmAutomacao("Charlie", 2000, 100, 0.3, 0.9);
         frio.Sinais.DiasSemMensagem = 5;
-        var vistos = new List<Visto> { new("charlie", Diagnostico.DoCliente(frio, P, Agora)[0].Assinatura, Agora.AddMinutes(-5), "Rafael") };
+        var vistos = new List<Visto> { new("charlie", Diagnostico.AssinaturaDoConjunto(Diagnostico.DoCliente(frio, P, Agora)), Agora.AddMinutes(-5), "Rafael") };
         var placar = new Placar("Rafael", 0, 0, 0, 0, 0, [], [], [], 0, 0, 0);
         var pan = Montador.Montar([em_dia, parou, frio], "POSEIDON", P, Agora, vistos, [], placar);
 
         Assert.Equal(3, pan.Resumo.Clientes);
-        Assert.Equal(2, pan.Resumo.PrecisamDeVoce);
+        /* "precisam de você" = tem gravidade e NÃO está visto: o Charlie (visto) não conta, só o Alfa */
+        Assert.Equal(1, pan.Resumo.PrecisamDeVoce);
         Assert.Equal(1, pan.Resumo.EmDia);
         Assert.Equal(33, pan.Resumo.SaudePct);
         Assert.Equal(1, pan.Estrelas.Single(e => e.Slug == "alfa").Posicao.Anel);
@@ -155,6 +156,8 @@ public class PanoramaTests
     [Fact]
     public void A_demonstracao_tem_50_estrelas_e_conta_a_historia_do_mapa()
     {
+        /* a história foi desenhada para o "dia 7 de 30": com o relógio real, o dia 1 e o fim do mês mudam o mapa */
+        using var relogio = Relogio.Fixar(Agora);
         var api = new DemoApi();
         var pan = api.LerPanoramaAsync("POSEIDON").GetAwaiter().GetResult();
         Assert.Equal(50, pan.Estrelas.Count);
@@ -171,10 +174,11 @@ public class PanoramaTests
     [Fact]
     public void Marcar_como_visto_silencia_e_resolver_da_os_pontos_da_gravidade()
     {
+        using var relogio = Relogio.Fixar(Agora);
         var api = new DemoApi();
         var antes = api.LerPanoramaAsync(null).GetAwaiter().GetResult();
         var ferraz = antes.Estrelas.Single(e => e.Slug == "ferraz-contabil");
-        api.MarcarVistoAsync("ferraz-contabil", ferraz.Principal!.Assinatura, true).GetAwaiter().GetResult();
+        api.MarcarVistoAsync("ferraz-contabil", ferraz.AssinaturaDoVisto, true).GetAwaiter().GetResult();
         var visto = api.LerPanoramaAsync(null).GetAwaiter().GetResult();
         Assert.True(visto.Estrelas.Single(e => e.Slug == "ferraz-contabil").EstaVista);
         Assert.Empty(visto.Interrompem);

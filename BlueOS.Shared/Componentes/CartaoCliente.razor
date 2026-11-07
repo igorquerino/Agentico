@@ -48,7 +48,7 @@
     }
     else
     {
-        <div class="act" @onclick:stopPropagation="true">
+        <div class="act" @onclick:stopPropagation="true" @onkeydown:stopPropagation="true">
             @if (Auto.EmCurso)
             {
                 <span class="pill ok"><i></i>Start em curso</span>

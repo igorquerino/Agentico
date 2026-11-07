@@ -235,7 +235,7 @@ public sealed class PanoramaApi(Db db, Carteira carteira, Meta meta, ILogger<Pan
             """), r => new Acendeu(r.Dt("em") ?? agora, r.S("nome")!, (int)r.L("pontos"), r.S("acao") ?? ""));
         var semVermelho = pan.Estrelas.Any(e => e.Principal?.Gravidade == Gravidade.AutomacaoParou) ? 0
             : (int)Math.Floor((agora - (await db.UmAsync(Sql.Fmt($"select max(em) as em from public.trafego_panorama_acendeu where gravidade = 1"), r => (object?)r.Dt("em")) as DateTime? ?? agora.Date)).TotalDays);
-        var squads = new List<LinhaDoRanking> { new(pan.Squad, pan.Resumo.SaudePct, true) };
+        var squads = new List<LinhaDoRanking> { new(pan.Squad, pan.Resumo.SaudePct ?? 0, true) };
         return new Placar(PrimeiroNome(eu), meus, posicao == 0 ? gestores.Count + 1 : posicao, Math.Max(gestores.Count, 1), posicao == 0 ? gestores.Count + 1 : posicao, Math.Max(gestores.Count, 1),
             ranking, squads, acendeu.OrderByDescending(a => a.Quando).ToList(), semVermelho, semVermelho, 0, aCaminho.OrderByDescending(a => a.Quando).ToList());
     }

@@ -110,9 +110,14 @@
 
     string adAccount = "", pageId = "", pageNome = "", tokenNovo = "";
     string? erro; bool ocupado; bool salvo;
+    Cliente? visto;
 
+    /* Os campos nascem do que está gravado só quando o CLIENTE muda: o pai re-renderiza a cada Avisar e a cada passo
+       do condutor, e repor aqui a cada render apagaria a conta e a página digitadas antes de salvar. */
     protected override void OnParametersSet()
     {
+        if (ReferenceEquals(visto, Cliente)) return;
+        visto = Cliente;
         adAccount = Cliente.Conta.AdAccountId ?? adAccount;
         pageId = Cliente.Conta.PageId ?? pageId;
         pageNome = Cliente.Conta.PageNome ?? pageNome;

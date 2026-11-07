@@ -123,7 +123,8 @@
         carregando = false;
     }
 
-    bool Passo1Ok => Nichos.Valido(nicho) && budget is > 0 && regua is { Perguntas.Count: > 0 };
+    /* conta só as perguntas com alguma resposta classificada: as todas "ignoradas" saem no Iniciar e a régua iria vazia */
+    bool Passo1Ok => Nichos.Valido(nicho) && budget is > 0 && regua is not null && regua.Perguntas.Any(q => q.Forte.Count + q.Media.Count + q.Elim.Count > 0);
 
     List<(string Valor, string Rotulo)> OpcoesDe(PerguntaDaRegua q) => opcoes.GetValueOrDefault(q.Nome) ?? new();
 

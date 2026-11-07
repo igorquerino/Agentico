@@ -62,9 +62,8 @@
 
     /* Onde o popover abre: ao lado da estrela, do lado que tem espaço. As contas usam o tamanho real do mapa
        pela variável --mapa, então valem em 1366 e em 1920. */
-    static readonly double[] Fator = [0, .193, .279, .364, .479];
     double Rad => Estrela.Posicao.Angulo * Math.PI / 180;
-    double F => Fator[Estrela.Posicao.Anel] - (Estrela.Posicao.Volta > 0 ? .03 : 0);
+    double F => Orbita.Fator(Estrela.Posicao.Anel) - (Estrela.Posicao.Volta > 0 ? .03 : 0);
     string Lado => Math.Cos(Rad) > 0.15 ? "esq" : "dir";
     string Estilo
     {
@@ -91,19 +90,22 @@
     void AbrirNoStart()
     {
         var etapa = Estrela.Principal?.EtapaDoStart ?? Estrela.Estagio;
-        Nav.NavigateTo($"start?cliente={Uri.EscapeDataString(Estrela.Slug)}&etapa={etapa.ToString().ToLowerInvariant()}");
+        /* de=panorama: o "← Carteira" do Start passa a voltar ao Panorama para quem chegou por aqui */
+        Nav.NavigateTo($"start?cliente={Uri.EscapeDataString(Estrela.Slug)}&etapa={etapa.ToString().ToLowerInvariant()}&de=panorama");
     }
 
     async Task Marcar()
     {
-        if (Estrela.Principal is not { } a) return;
+        if (Estrela.Principal is null) return;
         marcando = true;
         try
         {
             var vai = !Estrela.EstaVista;
-            await Api.MarcarVistoAsync(Estrela.Slug, a.Assinatura, vai);
+            /* o visto guarda o conjunto inteiro de alertas: uma causa nova no mesmo dia derruba o visto */
+            await Api.MarcarVistoAsync(Estrela.Slug, Estrela.AssinaturaDoVisto, vai);
             await Aviso.InvokeAsync(vai ? $"{Estrela.Nome} marcado como visto · volta amanhã ou se o estado mudar" : $"{Estrela.Nome} de volta ao mapa");
         }
+        catch (Exception ex) { await Aviso.InvokeAsync($"não consegui marcar o visto: {ex.Message}"); }
         finally { marcando = false; }
     }
 }
