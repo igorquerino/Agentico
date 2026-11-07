@@ -273,16 +273,20 @@ public sealed class Publicacao
 /* ---- automação ----------------------------------------------------------------- */
 
 public sealed record DiaDeInsight(DateOnly Dia, long GastoCentavos, int Leads);
-public sealed record Resposta(string Pergunta, string Valor);
+/// <summary>Uma resposta do lead. `Texto` é o texto da opção que a carga grava ao lado do código (#5004), quando há.</summary>
+public sealed record Resposta(string Pergunta, string Valor, string? Texto = null);
 
-/// <summary>Um conjunto em veiculação, como a carga diária o vê (trafego_adset_estado + trafego_insight_dia + trafego_lead).</summary>
+/// <summary>Um conjunto em veiculação, como a carga diária o vê (trafego_adset_estado + trafego_insight_dia + trafego_lead).
+/// Os valores padrão abaixo servem a DEMONSTRAÇÃO; a API preenche todos pela carga (Core/Motor/Carga), e o que ela não
+/// leu sai como "não sei" (formato Desconhecido, leitura Incompleta/Vencida, verba e status nulos), nunca como padrão.</summary>
 public sealed class ConjuntoEmVeiculacao
 {
     public required string AdsetId { get; init; }
     public required string Nome { get; init; }
     public required Etapa Etapa { get; init; }
     public string Publico { get; init; } = "";
-    public long DiarioCentavos { get; set; }
+    /// <summary>O orçamento diário do conjunto, pela foto válida da carga. null = CBO (a verba é da campanha) ou não lido.</summary>
+    public long? DiarioCentavos { get; set; }
     /// <summary>effective_status === ACTIVE. null = status não lido.</summary>
     public bool? Ativo { get; set; }
     public Formato Formato { get; set; } = Formato.Imagem;
@@ -295,6 +299,9 @@ public sealed class ConjuntoEmVeiculacao
     public DateOnly? UltimaAcaoExecutada { get; set; }
     public DateOnly? PendenteDesde { get; set; }
     public int CopiasVivas { get; set; }
+    /// <summary>A memória do motor para a árvore (em dias), como a carga a calculou do registro (memoria.ts). Quando
+    /// presente, é ELA que entra na árvore; os três campos acima ficam para a tela.</summary>
+    public MemoriaDoConjunto? Memoria { get; set; }
     public bool CopiaDoMotor { get; init; }
     public string? OriginalId { get; init; }
     /// <summary>A peça de copy que o anúncio carrega (trafego_anuncio_peca).</summary>

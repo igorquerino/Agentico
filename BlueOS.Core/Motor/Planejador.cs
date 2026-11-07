@@ -29,7 +29,7 @@ public static class Planejador
     /// <summary>A fatia de uma etapa, em centavos, para baixo, com a fração em milionésimos inteiros.</summary>
     static long FatiaDe(long diarioCentavos, double fracao)
     {
-        var n = diarioCentavos * (long)Math.Round(fracao * 1_000_000);
+        var n = diarioCentavos * (long)Math.Round(fracao * 1_000_000, MidpointRounding.AwayFromZero);
         return (n - (n % 1_000_000)) / 1_000_000;
     }
 

@@ -39,11 +39,17 @@ public static class Faixa
         _ => "TOFU 5%, MOFU 75% e BOFU 20% (o TOFU só com fatia de R$ 20/dia, o que pede R$ 12.000+)",
     };
 
-    /// <summary>As etapas do funil que a faixa pede. É o que o Copy gera e o que a campanha monta.</summary>
-    public static IReadOnlyList<Etapa> EtapasDaFaixa(FaixaId faixa) => faixa switch
+    /// <summary>
+    /// As etapas do funil que a estrutura de fato MONTA: as que ganham conjunto no <see cref="Planejador"/>, com a lista
+    /// e o site do cliente. É o que o Copy gera e o Design pede piloto. A fatia que o Planejador RESERVA não entra: f2
+    /// sem lista reserva o BOFU, e f3 com o TOFU abaixo de R$ 20/dia reserva o TOFU; pedir copy e arte dessas etapas era
+    /// pagar peça que nunca vai ao ar. Nenhuma etapa montada = só MOFU, que toda faixa tem.
+    /// </summary>
+    public static IReadOnlyList<Etapa> EtapasDaFaixa(long mensalCentavos, bool temLista, bool temSiteOuTag, ParametrosMotor p)
     {
-        FaixaId.AbaixoMinimo or FaixaId.F1Mofu => [Etapa.MOFU],
-        FaixaId.F2MofuBofu => [Etapa.MOFU, Etapa.BOFU],
-        _ => [Etapa.TOFU, Etapa.MOFU, Etapa.BOFU],
-    };
+        if (mensalCentavos <= 0) return [Etapa.MOFU];
+        var plano = Planejador.Planejar(new EntradaDoPlano(mensalCentavos, "estrategia", temLista, temSiteOuTag), p);
+        var etapas = new[] { Etapa.TOFU, Etapa.MOFU, Etapa.BOFU }.Where(et => plano.Conjuntos.Any(c => c.Etapa == et)).ToList();
+        return etapas.Count > 0 ? etapas : [Etapa.MOFU];
+    }
 }

@@ -13,7 +13,7 @@ namespace BlueOS.Core.Motor;
    ============================================================================ */
 public static class Arvore
 {
-    static int Centesimos(double v) => (int)Math.Round(v * 100);
+    static int Centesimos(double v) => (int)Math.Round(v * 100, MidpointRounding.AwayFromZero);
 
     static readonly Dictionary<Leitura, string> LeituraFalha = new()
     {
@@ -32,7 +32,7 @@ public static class Arvore
         long ponderadoX100 = e.MqlA * Centesimos(p.Pesos.A) + e.MqlB * Centesimos(p.Pesos.B) + e.MqlC * Centesimos(p.Pesos.C);
         var ponderado = ponderadoX100 / 100.0;
         var taxa = e.Avaliados > 0 ? ponderado / e.Avaliados : 0;
-        long? custoCentavos = ponderadoX100 > 0 ? (long)Math.Round((double)e.GastoCentavos * 100 / ponderadoX100) : null;
+        long? custoCentavos = ponderadoX100 > 0 ? (long)Math.Round((double)e.GastoCentavos * 100 / ponderadoX100, MidpointRounding.AwayFromZero) : null;
         long? teto = tetoCentavosDoPpl is > 0 ? tetoCentavosDoPpl : null;
         double? multiplo = teto is not null ? (double)e.GastoCentavos / teto.Value : null;
         var numeros = new NumerosDaDecisao(ponderado, taxa, custoCentavos, multiplo);
@@ -131,7 +131,7 @@ public static class Arvore
             else
             {
                 Passo("corte_sem_mql", ResultadoDaRegra.Passou,
-                    $"sem MQL, mas {Reais(e.GastoCentavos)} ainda está abaixo de {Reais((long)Math.Round(p.Corte.AlertarEm * t))} ({Fator(p.Corte.AlertarEm)} o teto).");
+                    $"sem MQL, mas {Reais(e.GastoCentavos)} ainda está abaixo de {Reais((long)Math.Round(p.Corte.AlertarEm * t, MidpointRounding.AwayFromZero))} ({Fator(p.Corte.AlertarEm)} o teto).");
             }
         }
         else
@@ -159,7 +159,7 @@ public static class Arvore
             $"depois do {p.NaoTocarDias}º dia de entrega, a escala e a troca de criativo são lidas a cada {p.CicloDias} dias; o corte, todo dia.");
 
         /* ---- 7. ESCALA ------------------------------------------------------- */
-        var okTaxa = e.Avaliados > 0 && ponderadoX100 * 100 >= (long)Math.Round(p.Escala.TaxaMin * 10_000) * e.Avaliados;
+        var okTaxa = e.Avaliados > 0 && ponderadoX100 * 100 >= (long)Math.Round(p.Escala.TaxaMin * 10_000, MidpointRounding.AwayFromZero) * e.Avaliados;
         var okCusto = ponderadoX100 > 0 && e.GastoCentavos * 100 <= t * ponderadoX100;
         var okAmostra = e.Avaliados >= p.Escala.PisoAvaliados;
         if (okTaxa && okCusto && okAmostra)
@@ -197,7 +197,7 @@ public static class Arvore
         Passo("gatilho_escala", ResultadoDaRegra.Passou, $"não escala: {string.Join(", ", falta)}.");
 
         /* ---- 8. CARO DEMAIS: TROCAR O CRIATIVO ------------------------------- */
-        var limiteTroca = (long)Math.Round(p.TrocaMultiploTeto * t);
+        var limiteTroca = (long)Math.Round(p.TrocaMultiploTeto * t, MidpointRounding.AwayFromZero);
         var caro = ponderadoX100 > 0 && e.GastoCentavos * 100 * 100 > (long)Centesimos(p.TrocaMultiploTeto) * t * ponderadoX100;
         if (mql > 0 && caro)
         {

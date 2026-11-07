@@ -336,9 +336,13 @@ public class FluxoDemoTests
         Assert.All(lote.Pecas, p => Assert.True(p.CrivoOk, p.MotivoDoCrivo));
         foreach (var p in lote.Pecas) await api.AprovarPecaAsync(c, p.Id, true);
         Assert.Equal(Estagio.Design, Estagios.DoCliente(c, api.Parametros));
+        /* faixa 2 SEM lista: o Planejador reserva o BOFU, então o fluxo não pede copy nem piloto de BOFU (não vai ao ar) */
+        Assert.Equal([Etapa.MOFU], Estagios.EtapasExigidas(c, api.Parametros));
+        c.Conta.TemLista = true;
+        Assert.Equal([Etapa.MOFU, Etapa.BOFU], Estagios.EtapasExigidas(c, api.Parametros));
         var artes = await api.GerarArtesAsync(c, [lote.Pecas[0].Id], ["feed", "story"]);
         Assert.Equal(2, artes.Count);
-        /* faixa 2 (R$ 4.000) pede um piloto de MOFU e outro de BOFU: só com o de MOFU o Design não fecha */
+        /* faixa 2 (R$ 4.000) COM lista monta MOFU e BOFU: só com o piloto de MOFU o Design não fecha */
         await api.EscolherPilotoAsync(c, Etapa.MOFU, artes[0].Id);
         Assert.Equal(Estagio.Design, Estagios.DoCliente(c, api.Parametros));
         Assert.Contains("criativo piloto de BOFU", Estagios.DesignPronto(c, api.Parametros).Pendencias);
