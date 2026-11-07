@@ -375,11 +375,17 @@ placar, ranking e "acendeu hoje" semeados; pontos de verdade quando um alerta so
 API .NET o Panorama é montado **no app** sobre a carteira (`PanoramaLocal.cs`): vistos na memória da sessão,
 placar zerado, sem CS nem pedido do cliente até a carteira da API trazer `Sinais`.
 
-**O que falta para o Panorama real** (EXPERIENCE.md, "Data contract"): a rota `GET /api/panorama` na API com os
-KPIs em lote (hoje é um `ongoing` por cliente), os sinais do CS e o token do squad numa consulta; a tabela do visto
-(`trafego_panorama_visto`) e a dos pontos (`trafego_panorama_acendeu`); a conferência periódica do token e a
-"última leitura" por fonte para os sinais de vida; e o push (SignalR) para a tela ser em tempo real de fato. Hoje o
-app relê a cada 60 s e a cada mudança da fonte.
+**A rota `GET /api/panorama` (08/11/2026, `Dominio/Panorama.cs`).** A API monta o Panorama inteiro numa leitura: a
+carteira do escopo com o token do squad conferido, mais UMA consulta com o que o mapa lê além do fluxo, por cliente
+(KPIs do mês pelos insights e leads com a régua do cliente; conjuntos ativos e verba diária; automação pausada; a
+última análise do CS: nota, faixa, risco, sinais de churn, tendência; a última mensagem do grupo; a última ação do
+agente), e as regras do Core decidem estrela e anel. O visto, o último alerta de cada cliente, o "a caminho" e os
+pontos vivem em `trafego_panorama_visto`, `_alerta`, `_a_caminho` e `_acendeu` (criadas pela API na primeira leitura,
+`create table if not exists`). Pontuar: um alerta que sumiu entre duas leituras acendeu a estrela; os pontos vão para
+quem tinha ação a caminho naquele cliente; sem ação humana ninguém pontua. `POST /api/panorama/visto` e
+`POST /api/panorama/a-caminho`. O desktop (`ApiNetApi`) usa a rota e cai para o `PanoramaLocal` numa API antiga.
+Fumaça na homologação em 08/11 (qa_trafego, escopo global): 18 clientes em 3,8 s, 4 em churn e 14 travados, visto e
+a caminho gravados e lidos de volta. Falta o push (SignalR): o app relê a cada 60 s e a cada mudança da fonte.
 
 ## O Start no tema Órbita: carteira de ação, trilha e "Falta" (07/11/2026)
 
@@ -402,7 +408,7 @@ quando a estrela acende. Na demo e no app é memória; na API falta a tabela (EX
 
 ## Próximos passos sugeridos
 
-1. A rota `GET /api/panorama` na API (KPIs em lote, CS, token, vistos e pontos persistidos) e o push por SignalR, para o Panorama sair da demonstração.
+1. O push por SignalR para o Panorama ser em tempo real de fato (hoje relê a cada 60 s); o estado do condutor persistido além da sessão.
 2. A primeira publicação de verdade pelo MCP num cliente POSEIDON com régua, artes e página com os termos de lead aceitos (`az-collections` tem a página; falta a régua e as artes).
 3. O worker da carga diária (rodar o motor) na API; o desktop só troca o endereço.
 4. As telas dos coordenadores sobre os endpoints do CS; depois os outros cargos (Designer, SEO) na mesma biblioteca.
