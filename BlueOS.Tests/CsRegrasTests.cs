@@ -11,7 +11,8 @@ public class CsRegrasTests
     [InlineData(0, null, null, 50)]      // só o valor: (0+100)/2
     [InlineData(100, 0, "baixo", 100)]   // valor máximo, risco zero
     [InlineData(-100, 100, "critico", 0)]
-    [InlineData(49, 15, "baixo", 81)]    // base 75 (74.5 arredonda pra cima); 75*0.4 + 85*0.6 = 81
+    [InlineData(49, 15, "baixo", 81)]    // base 75 (74.5 arredonda pra cima); 75*0.4 + 85*0.6 = 81 (com base 74 também daria 81)
+    [InlineData(-3, null, null, 49)]     // base 48.5: AwayFromZero dá 49; o arredondamento bancário daria 48
     [InlineData(20, 50, "sem_dados", 60)] // rótulo sem_dados ignora o risco: fica na base
     public void A_nota_pesa_60_por_cento_de_retencao_e_40_de_valor(int valor, int? risco, string? rotulo, int esperado) =>
         Assert.Equal(esperado, CsRegras.Nota(valor, risco, rotulo));
@@ -137,6 +138,28 @@ public class CsRegrasTests
         Assert.Equal(new DateOnly(2026, 11, 2), CsRegras.PrazoDoPasso("3d", noite));
         Assert.Equal(new DateOnly(2026, 12, 1), CsRegras.PrazoDoPasso("2026-12-01", noite));
         Assert.Null(CsRegras.PrazoDoPasso("quando der", noite));
+    }
+
+    /* O banco entrega as datas como Local (timestamptz convertido) ou Unspecified (timestamp sem fuso):
+       o dia em Brasília tem que sair igual ao do mesmo instante em UTC, dos dois lados da meia-noite. */
+    [Fact]
+    public void Datas_Local_e_Unspecified_contam_o_dia_em_brasilia_perto_da_virada()
+    {
+        static DateTime Local(DateTime utc) => utc.ToLocalTime();
+        static DateTime SemFuso(DateTime utc) => DateTime.SpecifyKind(utc.ToLocalTime(), DateTimeKind.Unspecified);
+        var antes = new DateTime(2026, 10, 30, 2, 30, 0, DateTimeKind.Utc);  // 29/10 23:30 em Brasília
+        var depois = new DateTime(2026, 10, 30, 3, 30, 0, DateTimeKind.Utc); // 30/10 00:30 em Brasília
+        foreach (var conv in new Func<DateTime, DateTime>[] { Local, SemFuso })
+        {
+            Assert.Equal(new DateOnly(2026, 10, 29), CsRegras.DiaBr(conv(antes)));
+            Assert.Equal(new DateOnly(2026, 10, 30), CsRegras.DiaBr(conv(depois)));
+            // grupo frio: a última mensagem vem do banco (Local/Unspecified), o agora é UtcNow
+            Assert.Equal((true, 3), CsRegras.GrupoFrio(conv(new DateTime(2026, 10, 27, 1, 0, 0, DateTimeKind.Utc)), antes));  // 26/10 22:00 BR
+            Assert.Equal((false, 2), CsRegras.GrupoFrio(conv(new DateTime(2026, 10, 27, 3, 30, 0, DateTimeKind.Utc)), antes)); // 27/10 00:30 BR
+            // prazo do passo com o agora em Local/Unspecified
+            Assert.Equal(new DateOnly(2026, 10, 29), CsRegras.PrazoDoPasso("imediato", conv(antes)));
+            Assert.Equal(new DateOnly(2026, 10, 31), CsRegras.PrazoDoPasso("1d", conv(depois)));
+        }
     }
 
     [Fact]
