@@ -310,7 +310,7 @@ public sealed class ApiNetApi : IBlueApi, IDisposable
                     Id = Str(p, "peca_id") ?? Guid.NewGuid().ToString("n"), Etapa = etapa, Tipo = tipo, Numero = (int)(Num(p, "ordem") ?? 0),
                     Headline = Str(p, "headline") ?? "", Sub = Str(p, "corpo") ?? "", Cta = Str(p, "cta") ?? "",
                     AnguloHeadline = Str(p, "angulo_headline") ?? "outro", PapelSub = Str(p, "papel_sub") ?? "fragmento", TipoCta = Str(p, "tipo_cta") ?? "outro", FormasHeadline = formas,
-                    CrivoOk = Bol(p, "crivo_ok") ?? true, MotivoDoCrivo = Str(p, "crivo_motivo"), Regeneracoes = Bol(p, "regerada") == true ? [Str(p, "crivo_motivo") ?? "regerada pelo crivo"] : [],
+                    CrivoOk = Bol(p, "crivo_ok") == true, MotivoDoCrivo = Str(p, "crivo_motivo"), /* nulo = o crivo não rodou: NÃO é aprovado */ Regeneracoes = Bol(p, "regerada") == true ? [Str(p, "crivo_motivo") ?? "regerada pelo crivo"] : [],
                 });
             }
         }
@@ -331,7 +331,7 @@ public sealed class ApiNetApi : IBlueApi, IDisposable
         {
             p.Headline = Str(np, "headline") ?? p.Headline; p.Sub = Str(np, "corpo") ?? p.Sub; p.Cta = Str(np, "cta") ?? p.Cta; p.Versao++;
             p.AnguloHeadline = Str(np, "angulo_headline") ?? p.AnguloHeadline; p.PapelSub = Str(np, "papel_sub") ?? p.PapelSub; p.TipoCta = Str(np, "tipo_cta") ?? p.TipoCta;
-            p.CrivoOk = Bol(np, "crivo_ok") ?? true; p.MotivoDoCrivo = Str(np, "crivo_motivo");
+            p.CrivoOk = Bol(np, "crivo_ok") == true; p.MotivoDoCrivo = Str(np, "crivo_motivo"); /* nulo = sem crivo: não aprovável */
         }
         Avisar();
     }

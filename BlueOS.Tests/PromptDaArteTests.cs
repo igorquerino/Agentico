@@ -104,7 +104,11 @@ public class PromptDaArteTests
         Assert.Equal("poppins", itens[0].GetProperty("fonte").GetString());
         Assert.Equal("seta", itens[2].GetProperty("icone").GetString());
         Assert.Equal("diagramacao-da-api", itens[3].GetProperty("tipo").GetString());
-        Assert.Equal(["Feche", "susto"], Diagramacao.DestaquesDaHeadline("Feche o mês com susto zero").Take(1).Concat(["susto"]));
+        /* o resultado inteiro da função contra o esperado (antes o teste completava a saída com o próprio esperado) */
+        Assert.Equal(["Feche", "susto"], Diagramacao.DestaquesDaHeadline("Feche o mês com susto zero"));
+        Assert.Equal(["Conciliação", "automática"], Diagramacao.DestaquesDaHeadline("Conciliação automática fecha o mês"));
+        Assert.Equal(["começa", "agora"], Diagramacao.DestaquesDaHeadline("2026 começa agora, sem susto"));
+        Assert.Empty(Diagramacao.DestaquesDaHeadline("O mês é seu"));
     }
 
     [Fact]

@@ -8,11 +8,15 @@ namespace BlueOS.Api.Infra;
    com o texto da copy carimbado em Poppins, como o texto-camada.ts do V1.
    ----------------------------------------------------------------------------
    · a cena é recortada/ajustada para 1080x1350 (feed) ou 1080x1920 (story);
-   · um gradiente escuro sobe pela base, onde o texto entra, para a leitura
-     não depender da sorte da foto (o V1 chama de "plano de contraste");
-   · headline (800), sub (500) e CTA em botão (700), nas caixas que a
-     Diagramacao calculou; as palavras de destaque saem na cor da marca;
-   · a faixa calma do topo fica como veio: a logo real é aplicada depois.
+   · o texto entra logo ABAIXO da faixa da logo, centralizado, na metade de
+     cima que o prompt manda deixar calma (Diagramacao.Empilhar, com a medida
+     real da fonte), e nunca sai da área do texto: o corpo encolhe antes;
+   · o plano de contraste (camada-degrade.ts) fica atrás do texto, denso em
+     cima e sumindo abaixo do bloco: a leitura não depende da sorte da foto, e
+     o objeto da cena, embaixo, fica limpo;
+   · headline (800), sub (500) e CTA em botão (700); as palavras de destaque
+     saem na cor da marca;
+   · a faixa da logo fica sem texto: a logo real é aplicada depois.
    As fontes vêm de BlueOS.Api/Fontes (Poppins, as do V1).
    ============================================================================ */
 public sealed class Compositor
@@ -55,50 +59,12 @@ public sealed class Compositor
         return saida;
     }
 
-    /// <summary>A diagramação conferida com a MEDIDA REAL da fonte: as linhas quebram pelo que cabe na caixa e, se passarem do
-    /// teto de linhas (3), o corpo desce até caber. O que a Diagramacao estimou por contagem de caracteres vira medida.</summary>
-    public static Layout Ajustar(Layout layout)
-    {
-        var w = layout.Largura; var h = layout.Altura;
-        var respiro = Diagramacao.Respiro * 1080;
-        var caixas = new List<CaixaDeTexto>();
-        foreach (var c in layout.Caixas)
-        {
-            if (c.Papel == "cta")
-            {
-                var tam = (float)(c.Tamanho * h);
-                using var f = new SKFont(Fonte(c.Peso), tam);
-                var largura = Math.Max(0.3 * w, f.MeasureText(c.Texto) + tam * 2.2);
-                /* o botão segue o EIXO do texto (a headline): à esquerda com ela, ao centro com ela */
-                var eixo = layout.Caixa("headline")?.Alinhamento ?? "esquerda";
-                var x = eixo == "centro" ? (w - largura) / 2 : respiro;
-                caixas.Add(c with { W = largura / w, X = x / w });
-                continue;
-            }
-            var maxLinhas = 3; var tamanho = c.Tamanho * h; var larguraPx = c.W * w;
-            List<string> linhas;
-            while (true)
-            {
-                using var f = new SKFont(Fonte(c.Peso), (float)tamanho);
-                linhas = QuebrarMedido(c.Texto, larguraPx, f);
-                if (linhas.Count <= maxLinhas || tamanho <= c.Tamanho * h * 0.6) break;
-                tamanho *= 0.92;
-            }
-            caixas.Add(c with { Tamanho = tamanho / h, Linhas = linhas });
-        }
-        /* as alturas de novo, de baixo para cima, como a Diagramacao fez por estimativa */
-        var head = caixas.First(x => x.Papel == "headline"); var sub = caixas.First(x => x.Papel == "sub"); var cta = caixas.First(x => x.Papel == "cta");
-        var altH = head.Linhas.Count * head.Tamanho * h * Diagramacao.Entrelinha;
-        var altS = sub.Linhas.Count * sub.Tamanho * h * Diagramacao.Entrelinha;
-        var altC = cta.Tamanho * h * 1.9; var vao = 0.022 * h;
-        var yIni = h - respiro * 1.2 - (altH + vao + altS + vao * 1.3 + altC);
-        yIni = Math.Max(yIni, Diagramacao.FaixaCalmaTopo * 1080 + respiro);
-        var saida = new List<CaixaDeTexto>
-        {
-            head with { Y = yIni / h }, sub with { Y = (yIni + altH + vao) / h }, cta with { Y = (yIni + altH + vao + altS + vao * 1.3) / h },
-        };
-        return layout with { Caixas = saida };
-    }
+    /// <summary>A diagramação conferida com a MEDIDA REAL da fonte: as linhas quebram pelo que cabe na caixa, cada caixa encolhe
+    /// até 3 linhas, e o bloco, empilhado logo abaixo da faixa da logo, encolhe inteiro se passar da área do texto
+    /// (Diagramacao.Empilhar, a regra pura). O que a Diagramacao estimou por contagem de caracteres vira medida.</summary>
+    public static Layout Ajustar(Layout layout) => Diagramacao.Empilhar(layout,
+        (texto, peso, tamanho, largura) => { using var f = new SKFont(Fonte(peso), (float)tamanho); return QuebrarMedido(texto, largura, f); },
+        (texto, peso, tamanho) => { using var f = new SKFont(Fonte(peso), (float)tamanho); return f.MeasureText(texto); });
 
     static List<string> QuebrarMedido(string texto, double larguraPx, SKFont fonte)
     {
@@ -113,23 +79,16 @@ public sealed class Compositor
         return linhas.Count == 0 ? [""] : linhas;
     }
 
-    /// <summary>A peça final: a cena, o plano de contraste e o texto. Devolve PNG e a diagramação como ficou (medida).</summary>
-    public static byte[] Compor(byte[] cenaPng, Layout layoutEstimado, out Layout layout)
+    /// <summary>A peça final: a cena, o plano de contraste e o texto. Devolve PNG, a diagramação como ficou (medida) e o degradê
+    /// que foi desenhado (o mesmo que vai para o `texto_layout`).</summary>
+    public static byte[] Compor(byte[] cenaPng, Layout layoutEstimado, out Layout layout, out DegradeDoTexto degrade)
     {
         layout = Ajustar(layoutEstimado);
+        degrade = Diagramacao.DegradeDoLayout(layout);
         using var bmp = Enquadrar(cenaPng, layout.Largura, layout.Altura);
         using var canvas = new SKCanvas(bmp);
         var w = layout.Largura; var h = layout.Altura;
-
-        /* o plano de contraste: gradiente da base até um pouco acima da headline */
-        var topoDoTexto = layout.Caixas.Min(c => c.Y) * h;
-        var inicio = Math.Max(0, topoDoTexto - 0.14 * h);
-        using (var tinta = new SKPaint())
-        {
-            tinta.Shader = SKShader.CreateLinearGradient(new SKPoint(0, (float)inicio), new SKPoint(0, h),
-                [SKColors.Black.WithAlpha(0), SKColors.Black.WithAlpha(150), SKColors.Black.WithAlpha(200)], [0f, 0.45f, 1f], SKShaderTileMode.Clamp);
-            canvas.DrawRect(0, (float)inicio, w, (float)(h - inicio), tinta);
-        }
+        DesenharDegrade(canvas, degrade, w, h);
 
         foreach (var caixa in layout.Caixas)
         {
@@ -165,6 +124,20 @@ public sealed class Compositor
         using var imagem = SKImage.FromBitmap(bmp);
         using var dados = imagem.Encode(SKEncodedImageFormat.Png, 100);
         return dados.ToArray();
+    }
+
+    /// <summary>O plano de contraste (camada-degrade.ts): o retângulo, com a transição entre as duas alças; antes da alça de início
+    /// fica a primeira ponta, depois da de fim, a segunda (o Clamp do shader faz isso).</summary>
+    static void DesenharDegrade(SKCanvas canvas, DegradeDoTexto d, int w, int h)
+    {
+        var rx = (float)(d.X * w); var ry = (float)(d.Y * h); var rw = (float)(d.W * w); var rh = (float)(d.H * h);
+        if (rw <= 0 || rh <= 0) return;
+        var cor = Cor(d.Cor);
+        using var tinta = new SKPaint { IsAntialias = true };
+        tinta.Shader = SKShader.CreateLinearGradient(
+            new SKPoint(rx + (float)d.InicioX * rw, ry + (float)d.InicioY * rh), new SKPoint(rx + (float)d.FimX * rw, ry + (float)d.FimY * rh),
+            [cor.WithAlpha((byte)Math.Round(d.OpacidadeDe * 255)), cor.WithAlpha((byte)Math.Round(d.OpacidadePara * 255))], [0f, 1f], SKShaderTileMode.Clamp);
+        canvas.DrawRect(rx, ry, rw, rh, tinta);
     }
 
     /// <summary>Desenha a linha palavra a palavra: as palavras em `destaques` saem na cor da marca (a do botão), com uma sombra leve atrás de tudo.</summary>

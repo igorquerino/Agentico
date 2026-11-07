@@ -22,21 +22,31 @@ public sealed class ImagemIa(IHttpClientFactory fabrica, IConfiguration cfg, Seg
     public const string ModeloOpenAiPadrao = "gpt-image-2.5-sunburst";
     public const string ModeloGeminiPadrao = "gemini-3.1-flash-image-preview";
 
-    public string? Provedor
+    /// <summary>Um valor de configuração ou segredo: vazio é AUSENTE (o exemplo de config traz `"OpenAiModelo": ""`, e `model: ""`
+    /// faria toda peça falhar depois do tema, que é pago).</summary>
+    public static string? Valor(string? v) => string.IsNullOrWhiteSpace(v) ? null : v.Trim();
+
+    bool TemChave(string provedor) => provedor == "gemini"
+        ? segredos.Tem("GOOGLE_AI_API_KEY") || segredos.Tem("GEMINI_API_KEY")
+        : segredos.Tem("OPENAI_API_KEY");
+
+    /// <summary>O provedor em uso, ou null quando não há como gerar: o provedor pedido em `Imagem:Provedor` SEM a chave dele
+    /// também é null, para o Designer responder 503 antes de abrir lote e pagar o tema.</summary>
+    public string? Provedor => Escolher(cfg["Imagem:Provedor"], TemChave("openai"), TemChave("gemini"));
+
+    /// <summary>A regra do provedor, pura: o pedido explícito vale só com a chave dele; sem pedido, a chave que existir (OpenAI
+    /// primeiro, o provedor do V1).</summary>
+    public static string? Escolher(string? pedido, bool temOpenAi, bool temGemini)
     {
-        get
-        {
-            var p = (cfg["Imagem:Provedor"] ?? "").Trim().ToLowerInvariant();
-            if (p is "openai" or "gemini") return p;
-            if (segredos.Tem("OPENAI_API_KEY")) return "openai";
-            if (segredos.Tem("GOOGLE_AI_API_KEY") || segredos.Tem("GEMINI_API_KEY")) return "gemini";
-            return null;
-        }
+        var p = (Valor(pedido) ?? "").ToLowerInvariant();
+        if (p == "openai") return temOpenAi ? p : null;
+        if (p == "gemini") return temGemini ? p : null;
+        return temOpenAi ? "openai" : temGemini ? "gemini" : null;
     }
 
     public string Modelo => Provedor == "gemini"
-        ? (cfg["Imagem:GeminiModelo"] ?? segredos.Ler("NANOBANANA_MODEL") ?? ModeloGeminiPadrao)
-        : (cfg["Imagem:OpenAiModelo"] ?? segredos.Ler("OPENAI_IMAGE_MODEL") ?? ModeloOpenAiPadrao);
+        ? (Valor(cfg["Imagem:GeminiModelo"]) ?? Valor(segredos.Ler("NANOBANANA_MODEL")) ?? ModeloGeminiPadrao)
+        : (Valor(cfg["Imagem:OpenAiModelo"]) ?? Valor(segredos.Ler("OPENAI_IMAGE_MODEL")) ?? ModeloOpenAiPadrao);
 
     public object Estado() => new
     {
@@ -51,7 +61,7 @@ public sealed class ImagemIa(IHttpClientFactory fabrica, IConfiguration cfg, Seg
         return h;
     }
 
-    /// <summary>Gera a cena. `formato` é "feed" (1080x1080) ou "story" (1080x1920): o provedor dá o mais perto e o compositor ajusta.</summary>
+    /// <summary>Gera a cena. `formato` é "feed" (1080x1350) ou "story" (1080x1920): o provedor dá o mais perto e o compositor ajusta.</summary>
     public async Task<ImagemGerada> GerarAsync(string prompt, string formato, CancellationToken ct = default)
     {
         var provedor = Provedor ?? throw new InvalidOperationException("sem modelo de imagem: informe OPENAI_API_KEY ou GOOGLE_AI_API_KEY (em Segredos, no ambiente ou num arquivo .env listado em Segredos:Arquivos).");
@@ -63,9 +73,9 @@ public sealed class ImagemIa(IHttpClientFactory fabrica, IConfiguration cfg, Seg
         var chave = segredos.Ler("OPENAI_API_KEY") ?? throw new InvalidOperationException("sem OPENAI_API_KEY.");
         var modelo = Modelo;
         /* os tamanhos da Meta (1080x1350 / 1080x1920) a OpenAI não aceita: saem os do V1 (formato.ts) e o compositor ajusta */
-        var size = cfg["Imagem:OpenAiTamanho"] ?? (formato == "story" ? "1024x1792" : "1024x1280");
+        var size = Valor(cfg["Imagem:OpenAiTamanho"]) ?? (formato == "story" ? "1024x1792" : "1024x1280");
         var corpo = new Dictionary<string, object?> { ["model"] = modelo, ["prompt"] = prompt, ["size"] = size, ["n"] = 1 };
-        if (!modelo.StartsWith("dall-e", StringComparison.OrdinalIgnoreCase)) corpo["quality"] = cfg["Imagem:OpenAiQualidade"] ?? "high";
+        if (!modelo.StartsWith("dall-e", StringComparison.OrdinalIgnoreCase)) corpo["quality"] = Valor(cfg["Imagem:OpenAiQualidade"]) ?? "high";
         using var req = new HttpRequestMessage(HttpMethod.Post, "https://api.openai.com/v1/images/generations")
         { Content = new StringContent(JsonSerializer.Serialize(corpo), Encoding.UTF8, "application/json") };
         req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", chave);
@@ -84,7 +94,7 @@ public sealed class ImagemIa(IHttpClientFactory fabrica, IConfiguration cfg, Seg
 
     async Task<ImagemGerada> GeminiAsync(string prompt, string formato, CancellationToken ct)
     {
-        var chave = segredos.Ler("GOOGLE_AI_API_KEY") ?? segredos.Ler("GEMINI_API_KEY") ?? throw new InvalidOperationException("sem GOOGLE_AI_API_KEY.");
+        var chave = Valor(segredos.Ler("GOOGLE_AI_API_KEY")) ?? Valor(segredos.Ler("GEMINI_API_KEY")) ?? throw new InvalidOperationException("sem GOOGLE_AI_API_KEY.");
         var modelo = Modelo;
         var corpo = new
         {

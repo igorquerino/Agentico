@@ -20,13 +20,29 @@ namespace BlueOS.Core.Copy;
    O vault vem do banco (trafego_vault_em_uso → trafego_vault_nota), nas mesmas
    tabelas que o V1 lê; quem lê é a API, aqui só se monta o texto.
    ============================================================================ */
-public sealed record RegraDoVault(string Id, string Chave, string Tipo, string Status, string Titulo, string Corpo, IReadOnlyList<string> Etapas, IReadOnlyList<string> PapeisPreferidos);
+/// <summary>Uma regra de copy do vault. `Etapas`, `Nichos`, `Faixas` e `Nivel` são o `aplica_em` (vazio = vale para todos).</summary>
+public sealed record RegraDoVault(string Id, string Chave, string Tipo, string Status, string Titulo, string Corpo, IReadOnlyList<string> Etapas, IReadOnlyList<string> PapeisPreferidos)
+{
+    public IReadOnlyList<string> Nichos { get; init; } = [];
+    public IReadOnlyList<string> Faixas { get; init; } = [];
+    public string? Nivel { get; init; }
+}
 public sealed record EstruturaDeNicho(string Etapa, string Parte, int Ordem, string Estrutura, string Base);
 public sealed record NotaDeNicho(string Id, IReadOnlyList<EstruturaDeNicho> Estruturas, IReadOnlyList<EstruturaDeNicho> Evitar);
 public sealed record SnapshotDoVault(string Sha, IReadOnlyList<RegraDoVault> Regras, IReadOnlyDictionary<string, NotaDeNicho> Nichos)
 {
-    public NotaDeNicho? Nicho(string? slug) => slug is null ? null : Nichos.TryGetValue($"NICHO-{slug}", out var n) ? n : null;
-    public RegraDoVault? RegraDaChave(string chave) => Regras.FirstOrDefault(r => r.Chave == chave);
+    /// <summary>As notas que não deu para ler (frontmatter com tipo inesperado): ficaram de fora, o resto do vault vale.</summary>
+    public IReadOnlyList<string> Ignoradas { get; init; } = [];
+    public NotaDeNicho? Nicho(string? slug) => slug is null ? null : Nichos.TryGetValue($"NICHO-{slug}", out var n) ? n : Nichos.TryGetValue(slug, out var m) ? m : null;
+
+    /// <summary>A regra VIVA de uma chave de copy (consulta.ts, regraDaChaveCopy): só fechada ou hipótese contam; nenhuma é
+    /// "ausente" e duas ou mais é "repetida", e nos dois casos a chave fica desligada, nunca escolhida ao acaso.</summary>
+    public (RegraDoVault? Regra, string Motivo) RegraDaChaveCopy(string chave)
+    {
+        var donas = Regras.Where(r => r.Chave == chave && PromptDoCopy.StatusValeParaChaveCopy(r.Status)).ToList();
+        return donas.Count == 1 ? (donas[0], "") : (null, donas.Count > 0 ? "repetida" : "ausente");
+    }
+    public RegraDoVault? RegraDaChave(string chave) => RegraDaChaveCopy(chave).Regra;
 }
 
 /// <summary>A estrutura declarada pelo modelo, conferida contra o vocabulário (etiqueta.ts).</summary>
@@ -35,7 +51,9 @@ public sealed record Declaracao(string AnguloHeadline, IReadOnlyList<string> For
 public sealed record RegraNoCrivo(string Chave, string Id, string Status, bool Ok, string? Motivo);
 public sealed record ResultadoDoCrivo(string? Sha, bool? Ok, IReadOnlyList<RegraNoCrivo> Regras, IReadOnlyList<(string Chave, string Motivo)> Desligadas)
 {
-    public string? MotivoDaReprovacao => Ok == false ? string.Join("; ", Regras.Where(r => !r.Ok).Select(r => $"{r.Chave}: {r.Motivo}")) : null;
+    /// <summary>O que a régua V8 em código reprovou (R1, R3, R10, peça incompleta): o mesmo que o crivo da publicação confere.</summary>
+    public IReadOnlyList<string> Regua { get; init; } = [];
+    public string? MotivoDaReprovacao => Ok == false ? string.Join("; ", Regras.Where(r => !r.Ok).Select(r => $"{r.Chave}: {r.Motivo}").Concat(Regua)) : null;
 }
 
 /// <summary>Uma peça como o modelo a devolve.</summary>
@@ -55,6 +73,38 @@ public static class PromptDoCopy
     public const int TetoPorItem = 15;
     public const int TetoPorLote = 30;
     public const int LimiteBriefing = 4000;
+    /// <summary>etapas.ts LIMITE_REFERENCIA: a copy de referência entra no prompt cortada aqui.</summary>
+    public const int LimiteReferencia = 20000;
+    /// <summary>O que a peça diz quando o crivo não rodou (sem versão do vault): não é aprovação.</summary>
+    public const string MotivoSemCrivo = "sem crivo: nenhuma versão do vault em uso nesta base, a peça não pode ser aprovada até passar no crivo";
+
+    /// <summary>contrato.ts statusValeParaChaveCopy: a regra de copy vale para o código só fechada ou hipótese.</summary>
+    public static bool StatusValeParaChaveCopy(string status) => status is "fechada" or "hipotese";
+
+    /// <summary>O PORTÃO da aprovação: só `crivo_ok == true` libera. Nulo (o crivo não rodou) NÃO é aprovado, em lugar nenhum.</summary>
+    public static bool CrivoLibera(bool? crivoOk) => crivoOk == true;
+
+    /// <summary>O nome que a régua R1 procura no TOFU: o mesmo que o crivo da publicação usa (Publicador).</summary>
+    public static string MarcaDoCliente(Cliente c) => c.Produto.NomeCorreto ?? c.Nome;
+
+    /// <summary>Só cliente ativo ou em onboarding gera ou ajusta copy e arte (a mesma regra no Gerar, no Ajustar e no Designer).</summary>
+    public static bool ClientePodeGerar(string? status) => status is "ativo" or "onboarding";
+
+    /// <summary>Os campos de um ajuste (rota ajustar do V1): ausente = os três; lista vazia ou com nome fora da lista é ERRO (400),
+    /// nunca a peça inteira reescrita em silêncio.</summary>
+    public static (List<string> Campos, string? Erro) CamposDoAjuste(IReadOnlyList<string>? pedidos)
+    {
+        if (pedidos is null) return (Campos.ToList(), null);
+        if (pedidos.Count == 0) return ([], "campos deve ser uma lista não vazia (headline, corpo, cta).");
+        var invalidos = pedidos.Where(x => !Campos.Contains(x)).Distinct().ToList();
+        if (invalidos.Count > 0) return ([], $"campo desconhecido: {string.Join(", ", invalidos)} (válidos: headline, corpo, cta).");
+        return (pedidos.Distinct().ToList(), null);
+    }
+
+    /// <summary>As guardas do ajuste: peça aprovada ou já publicada num anúncio não se reescreve (409). Null = pode ajustar.</summary>
+    public static string? GuardaDoAjuste(bool aprovada, bool publicada) =>
+        aprovada ? "a peça está aprovada: desaprove antes de ajustar."
+        : publicada ? "a peça já está publicada num anúncio: não se reescreve copy no ar." : null;
 
     static readonly Dictionary<string, string> RotuloTipo = new() { ["estatico"] = "ESTÁTICO", ["video"] = "VÍDEO" };
     static readonly Dictionary<string, string> RotuloCampo = new() { ["headline"] = "HEADLINE", ["corpo"] = "CORPO", ["cta"] = "CTA" };
@@ -65,31 +115,44 @@ public static class PromptDoCopy
     /// <summary>As notas de uma versão do vault (frontmatter + corpo) viram o snapshot que o prompt e o crivo usam.</summary>
     public static SnapshotDoVault Snapshot(string sha, IEnumerable<(string Id, JsonElement Frontmatter, string Corpo)> notas)
     {
-        var regras = new List<RegraDoVault>(); var nichos = new Dictionary<string, NotaDeNicho>();
+        var regras = new List<RegraDoVault>(); var nichos = new Dictionary<string, NotaDeNicho>(); var ignoradas = new List<string>();
         foreach (var (id, fm, corpo) in notas)
         {
-            if (fm.ValueKind != JsonValueKind.Object) continue;
-            var tipo = S(fm, "tipo") ?? "";
-            if (tipo == "nicho")
+            /* uma nota ruim sai sozinha: o vault inteiro não cai por ela (e o crivo não desliga) */
+            try
             {
-                nichos[id] = new NotaDeNicho(id, Estruturas(fm, "estruturas"), Estruturas(fm, "evitar"));
-                continue;
+                if (fm.ValueKind != JsonValueKind.Object) continue;
+                var tipo = S(fm, "tipo") ?? "";
+                if (tipo == "nicho")
+                {
+                    nichos[id] = new NotaDeNicho(id, Estruturas(fm, "estruturas"), Estruturas(fm, "evitar"));
+                    continue;
+                }
+                var chave = S(fm, "chave_copy");
+                if (string.IsNullOrEmpty(chave)) continue;
+                var ap = fm.TryGetProperty("aplica_em", out var a) && a.ValueKind == JsonValueKind.Object ? a : default;
+                var papeis = fm.TryGetProperty("parametros", out var pr) && pr.ValueKind == JsonValueKind.Object ? Textos(pr, "papeis") : [];
+                regras.Add(new RegraDoVault(id, chave, tipo, S(fm, "status") ?? "", S(fm, "titulo") ?? id, corpo, Textos(ap, "etapa"), PapeisDaRegra(papeis))
+                {
+                    Nichos = Textos(ap, "nicho"), Faixas = Textos(ap, "faixa"), Nivel = S(ap, "nivel"),
+                });
             }
-            var chave = S(fm, "chave_copy");
-            if (string.IsNullOrEmpty(chave)) continue;
-            var etapas = fm.TryGetProperty("aplica_em", out var ap) && ap.ValueKind == JsonValueKind.Object && ap.TryGetProperty("etapa", out var et) && et.ValueKind == JsonValueKind.Array
-                ? et.EnumerateArray().Select(x => x.GetString() ?? "").Where(x => x != "").ToList() : new List<string>();
-            var papeis = fm.TryGetProperty("parametros", out var pr) && pr.ValueKind == JsonValueKind.Object && pr.TryGetProperty("papeis_sub", out var ps) && ps.ValueKind == JsonValueKind.Array
-                ? ps.EnumerateArray().Select(x => x.GetString() ?? "").Where(x => x != "").ToList() : new List<string>();
-            regras.Add(new RegraDoVault(id, chave, tipo, S(fm, "status") ?? "", S(fm, "titulo") ?? id, corpo, etapas, papeis));
+            catch (Exception e) when (e is InvalidOperationException or FormatException or JsonException) { ignoradas.Add(id); }
         }
-        return new SnapshotDoVault(sha, regras, nichos);
+        return new SnapshotDoVault(sha, regras, nichos) { Ignoradas = ignoradas };
     }
+
+    static List<string> Textos(JsonElement o, string campo) =>
+        o.ValueKind == JsonValueKind.Object && o.TryGetProperty(campo, out var arr) && arr.ValueKind == JsonValueKind.Array
+            ? arr.EnumerateArray().Where(x => x.ValueKind == JsonValueKind.String).Select(x => x.GetString() ?? "").Where(x => x != "").ToList() : new();
+
+    /// <summary>contrato.ts papeisDaRegra: só os papéis de SUB do vocabulário.</summary>
+    public static List<string> PapeisDaRegra(IEnumerable<string> papeis) => papeis.Where(p => Copy.Estruturas.PapeisSub.Contains(p)).ToList();
 
     static List<EstruturaDeNicho> Estruturas(JsonElement fm, string campo) =>
         fm.TryGetProperty(campo, out var arr) && arr.ValueKind == JsonValueKind.Array
             ? arr.EnumerateArray().Where(x => x.ValueKind == JsonValueKind.Object)
-                .Select(x => new EstruturaDeNicho(S(x, "etapa") ?? "", S(x, "parte") ?? "", x.TryGetProperty("ordem", out var o) && o.ValueKind == JsonValueKind.Number ? o.GetInt32() : 0, S(x, "estrutura") ?? "", S(x, "base") ?? "")).ToList()
+                .Select(x => new EstruturaDeNicho(S(x, "etapa") ?? "", S(x, "parte") ?? "", x.TryGetProperty("ordem", out var o) && o.ValueKind == JsonValueKind.Number && o.TryGetInt32(out var oi) ? oi : 0, S(x, "estrutura") ?? "", S(x, "base") ?? "")).ToList()
             : new();
 
     static string? S(JsonElement o, string n) => o.ValueKind == JsonValueKind.Object && o.TryGetProperty(n, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
@@ -103,8 +166,8 @@ public static class PromptDoCopy
         var linhas = new List<string>();
         foreach (var chave in ChavesCopy)
         {
-            var r = snapshot.RegraDaChave(chave);
-            if (r is null) { desligadas.Add((chave, "ausente")); continue; }
+            var (r, motivo) = snapshot.RegraDaChaveCopy(chave);
+            if (r is null) { desligadas.Add((chave, motivo)); continue; }
             linhas.Add(LinhaDaRegra(r));
         }
         var texto = new List<string>
@@ -233,22 +296,63 @@ public static class PromptDoCopy
         return (origem, origem == "geral" ? b.GeralId : b.NichoId);
     }
 
-    /// <summary>A divisão geral/nicho de um grupo (divisao.ts): 1 peça em 5 segue o nicho, quando as duas têm base; sem geral, todas o nicho.</summary>
-    public static List<string?> DivisaoDoGrupo(BlocosDoVault b, string etapa, int n, int jaDoNicho, int jaTotal)
+    /* ---- a divisão geral/nicho (divisao.ts, porte literal) ----------------------- */
+
+    /// <summary>De cada `Ciclo` peças de um cliente, 1 segue a orientação de nicho.</summary>
+    public const int Ciclo = 5;
+
+    /// <summary>Quantas peças do cliente já seguiram cada orientação, DESDE A PRIMEIRA GERAL (divisao.ts: Historico).</summary>
+    public sealed record Historico(int Geral, int Nicho)
+    {
+        public static readonly Historico Zero = new(0, 0);
+    }
+
+    /// <summary>pecasDoNicho: quantas das `n` peças seguem o nicho, para o cliente chegar a 1 em cada 5 sem um lote passar de
+    /// 1 a cada 5 das próprias peças (teto `ceil(n/5)`).</summary>
+    public static int PecasDoNicho(int n, Historico h)
+    {
+        if (n <= 0) return 0;
+        var devidas = (h.Geral + h.Nicho + n) / Ciclo - h.Nicho;
+        return Math.Max(0, Math.Min(Math.Min(devidas, (n + Ciclo - 1) / Ciclo), n));
+    }
+
+    /// <summary>fontesDoGrupo: a orientação de cada peça (as de nicho no fim) e o histórico depois do grupo. Sem a geral, todas
+    /// seguem o nicho e o histórico não anda; sem base nenhuma, null (vale a régua).</summary>
+    public static (List<string?> Fontes, Historico Depois) FontesDoGrupo(int n, (bool Geral, bool Nicho) f, Historico h)
+    {
+        static List<string?> Vezes(int k, string? v) => Enumerable.Repeat(v, Math.Max(0, k)).ToList();
+        if (f.Geral && f.Nicho)
+        {
+            var k = PecasDoNicho(n, h);
+            return ([.. Vezes(n - k, "geral"), .. Vezes(k, "nicho")], new Historico(h.Geral + n - k, h.Nicho + k));
+        }
+        if (f.Geral) return (Vezes(n, "geral"), h with { Geral = h.Geral + n });
+        if (f.Nicho) return (Vezes(n, "nicho"), h);
+        return (Vezes(n, null), h);
+    }
+
+    /// <summary>historicoDasPecas: as origens das peças do cliente em ordem de criação; só conta da primeira `geral` em diante.</summary>
+    public static Historico HistoricoDasPecas(IEnumerable<string?> origensEmOrdem)
+    {
+        var geral = 0; var nicho = 0; var comecou = false;
+        foreach (var o in origensEmOrdem)
+        {
+            if (o == "geral") comecou = true;
+            if (!comecou) continue;
+            if (o == "geral") geral++; else if (o == "nicho") nicho++;
+        }
+        return new Historico(geral, nicho);
+    }
+
+    /// <summary>A divisão de um grupo pelas fontes da etapa (o que o vault tem de base em cada orientação).</summary>
+    public static (List<string?> Fontes, Historico Depois) DivisaoDoGrupo(BlocosDoVault b, string etapa, int n, Historico h)
     {
         (bool Geral, bool Nicho) f = b.FontesPorEtapa.TryGetValue(etapa, out var x) ? x : (false, false);
-        if (!f.Geral && !f.Nicho) return Enumerable.Repeat<string?>(null, n).ToList();
-        if (!f.Geral) return Enumerable.Repeat<string?>("nicho", n).ToList();
-        if (!f.Nicho) return Enumerable.Repeat<string?>("geral", n).ToList();
-        var saida = new List<string?>();
-        for (var i = 0; i < n; i++)
-        {
-            var total = jaTotal + i + 1; var doNicho = jaDoNicho + saida.Count(s => s == "nicho");
-            saida.Add(doNicho * 5 < total ? "nicho" : "geral");
-        }
-        /* a geral vem primeiro no pedido, o nicho depois (textoDaDivisao diz "as peças 1 a g seguem a geral") */
-        return saida.OrderBy(s => s == "nicho" ? 1 : 0).ToList();
+        return FontesDoGrupo(n, f, h);
     }
+
+    public static List<string?> DivisaoDoGrupo(BlocosDoVault b, string etapa, int n, int historicoGeral, int historicoNicho) =>
+        DivisaoDoGrupo(b, etapa, n, new Historico(historicoGeral, historicoNicho)).Fontes;
 
     public static string TextoDaDivisao(IReadOnlyList<string?> fontes)
     {
@@ -272,14 +376,23 @@ public static class PromptDoCopy
 
     public sealed record Inteligencia(string? VozDoCliente, string? Fundador, string? ConcorrenciaPrincipal, IReadOnlyList<string> PersonasAlvo);
 
-    /// <summary>O contexto do cliente, em markdown, como `montarContexto` do V1. `TemIcp` é a régua de "dá pra gerar sem briefing".</summary>
+    /// <summary>O ICP tem dado de verdade além de tipo, nível e temperatura? Esses três chegam preenchidos com um PADRÃO quando
+    /// o banco não tem nada ("B2B", "3", "morno", na leitura do cliente), então sozinhos não provam que o ICP existe.</summary>
+    public static bool IcpTemDado(Icp i) =>
+        i.DoresPrincipais.Count > 0 || i.DesejosPrincipais.Count > 0 || i.CanaisOndeEstao.Count > 0
+        || new[] { i.Segmento, i.Setor, i.CargoDecisor, i.FaturamentoMinimo, i.Localizacao, i.Persona, i.PublicoAlvo, i.TamanhoMercado, i.Obs }.Any(x => !string.IsNullOrWhiteSpace(x));
+
+    /// <summary>O contexto do cliente, em markdown, como `montarContexto` do V1. `TemIcp` é a régua de "dá pra gerar sem briefing"
+    /// (o V1: dores, tipo ou segmento); o tipo só conta, e o perfil só entra no contexto, quando o ICP tem algum outro dado: o
+    /// padrão da leitura não vira fato do cliente nem desliga o 422.</summary>
     public static (string Texto, bool TemIcp) ContextoDoCliente(Cliente c, Inteligencia? n = null)
     {
         var i = c.Icp; var p = c.Produto; var e = c.Estrategia;
-        var temIcp = i.DoresPrincipais.Count > 0 || !string.IsNullOrWhiteSpace(i.Tipo) || !string.IsNullOrWhiteSpace(i.Segmento);
+        var icpReal = IcpTemDado(i);
+        var temIcp = i.DoresPrincipais.Count > 0 || !string.IsNullOrWhiteSpace(i.Segmento) || (icpReal && !string.IsNullOrWhiteSpace(i.Tipo));
         var t = new StringBuilder($"# CLIENTE: {c.Nome}\n\n");
         var recorte = Linha("Segmento", i.Segmento) + Linha("Setor", i.Setor) + Linha("Cargo decisor (a copy é DIRECIONADA a ele)", i.CargoDecisor) + Linha("Faturamento mínimo", i.FaturamentoMinimo) + Linha("Localização", i.Localizacao);
-        var perfil = Linha("Tipo", i.Tipo) + Linha("Nível de consciência (1-5)", i.NivelConsciencia) + Linha("Temperatura", i.Temperatura) + Linha("Tamanho de mercado", i.TamanhoMercado)
+        var perfil = (icpReal ? Linha("Tipo", i.Tipo) + Linha("Nível de consciência (1-5)", i.NivelConsciencia) + Linha("Temperatura", i.Temperatura) : "") + Linha("Tamanho de mercado", i.TamanhoMercado)
             + Linha("Persona (quem decide, como pessoa)", i.Persona) + Linha("Público-alvo (quem a mídia paga alcança)", i.PublicoAlvo)
             + ListaTxt("Dores principais", i.DoresPrincipais) + ListaTxt("Desejos principais", i.DesejosPrincipais) + ListaTxt("Canais onde estão", i.CanaisOndeEstao) + Linha("Observações", i.Obs);
         if (recorte != "" || perfil != "") t.Append("## ICP 1 (público-alvo)\n").Append(recorte).Append(perfil);
@@ -507,36 +620,81 @@ public static class PromptDoCopy
         return marcadores.FirstOrDefault(m => m.IsMatch(t))?.ToString();
     }
 
-    /// <summary>O resultado do crivo para UMA peça. Só proibição FECHADA reprova; hipótese só avisa; a regra tem de valer na etapa.</summary>
-    public static ResultadoDoCrivo Crivar(PecaDoModelo peca, Declaracao? declaracao, string etapa, SnapshotDoVault? snapshot)
+    /// <summary>As chaves que o crivo sabe conferir, na ordem de CHAVES_COPY (crivo.ts, CHECAGENS).</summary>
+    public static readonly string[] ChavesDoCrivo = ["nunca_reuniao_cta_mofu", "nunca_negacao_headline", "nunca_prova_sub_mofu"];
+
+    /// <summary>A etapa que cada proibição declara no vault (contrato.ts, EXIGE): é o que vale quando não há vault à mão, no crivo
+    /// da publicação. Vazio = todas as etapas.</summary>
+    public static IReadOnlyList<string> EtapasDaProibicao(string chave) => chave is "nunca_reuniao_cta_mofu" or "nunca_prova_sub_mofu" ? ["MOFU"] : [];
+
+    /// <summary>consulta.ts casa(): campo ausente no `aplica_em` vale para todos; campo presente na regra e desconhecido no alvo
+    /// NÃO casa (afirmar que a regra vale sem saber o alvo é inventar alcance).</summary>
+    public static bool Casa(RegraDoVault r, string? etapa, string? nicho, string? faixa = null, string? nivel = null)
+    {
+        if (r.Etapas.Count > 0 && (etapa is null || !r.Etapas.Contains(etapa))) return false;
+        if (r.Nichos.Count > 0 && (nicho is null || !r.Nichos.Contains(nicho))) return false;
+        if (r.Faixas.Count > 0 && (faixa is null || !r.Faixas.Contains(faixa))) return false;
+        if (!string.IsNullOrEmpty(r.Nivel) && (nivel is null || r.Nivel != nivel)) return false;
+        return true;
+    }
+
+    /// <summary>Por que a peça fere UMA proibição (pela declaração ou pelo texto), ou null. É a mesma conta no crivo da geração
+    /// (com o vault) e no da publicação (Crivo.Conferir): os dois portões dizem a mesma coisa.</summary>
+    public static string? MotivoDaProibicao(string chave, PecaDoModelo peca, Declaracao? declaracao) => chave switch
+    {
+        "nunca_negacao_headline" => declaracao?.FormaHeadline.Contains("negacao") == true ? "a declaração traz negacao na headline"
+            : Acha(peca.Headline, MarcadoresDeNegacao) is { } m1 ? $"headline em negação (\"{m1}\")" : null,
+        "nunca_prova_sub_mofu" => declaracao?.PapelSub == "prova" ? "a declaração traz prova na sub"
+            : Acha(peca.Corpo, MarcadoresDeProva) is { } m2 ? $"prova na sub (\"{m2}\")" : null,
+        "nunca_reuniao_cta_mofu" => declaracao?.TipoCta == "agendar_solicitar" ? "a declaração traz agendar_solicitar no CTA"
+            : Acha(peca.Cta, MarcadoresDeReuniao) is { } m3 ? $"pedido de reunião no CTA (\"{m3}\")" : null,
+        _ => null,
+    };
+
+    static readonly Regex Travessao = new(@"\s[—–-]\s|—", RegexOptions.Compiled);
+
+    /// <summary>A régua V8 que se confere em código (a mesma do crivo da publicação): R10 sem travessão, R1 o TOFU não cita a
+    /// marca, R3 CTA de estático até 4 palavras, e a peça completa. `tipo` "estatico" | "video" (nulo: R3 não se aplica).</summary>
+    public static List<string> RegrasDaRegua(string headline, string corpo, string cta, string etapa, string? tipo, string? marca)
+    {
+        var problemas = new List<string>();
+        var tudo = $"{headline}\n{corpo}\n{cta}";
+        if (Travessao.IsMatch(tudo)) problemas.Add("R10: travessão na peça");
+        if (etapa == "TOFU" && !string.IsNullOrWhiteSpace(marca) && tudo.Contains(marca.Trim(), StringComparison.OrdinalIgnoreCase)) problemas.Add("R1: o TOFU cita a marca");
+        if (tipo == "estatico" && cta.Split(' ', StringSplitOptions.RemoveEmptyEntries).Length > 4) problemas.Add("R3: CTA de estático com mais de 4 palavras");
+        if (string.IsNullOrWhiteSpace(headline) || string.IsNullOrWhiteSpace(corpo) || string.IsNullOrWhiteSpace(cta)) problemas.Add("peça incompleta: abertura, fecho e CTA são obrigatórios");
+        return problemas;
+    }
+
+    /// <summary>O crivo (crivo.ts) para UMA peça. Só proibição FECHADA reprova; hipótese avisa; a regra tem de casar com o alvo
+    /// (etapa e nicho). Chave sem regra viva (ausente ou repetida) fica desligada. Sem snapshot: Ok nulo, que NÃO é aprovação.</summary>
+    public static ResultadoDoCrivo Crivar(PecaDoModelo peca, Declaracao? declaracao, string etapa, SnapshotDoVault? snapshot, string? nicho = null)
     {
         if (snapshot is null) return new(null, null, [], []);
         var regras = new List<RegraNoCrivo>(); var desligadas = new List<(string, string)>();
-        foreach (var chave in new[] { "nunca_negacao_headline", "nunca_prova_sub_mofu", "nunca_reuniao_cta_mofu" })
+        foreach (var chave in ChavesDoCrivo)
         {
-            var r = snapshot.RegraDaChave(chave);
-            if (r is null) { desligadas.Add((chave, "ausente")); continue; }
-            if (r.Etapas.Count > 0 && !r.Etapas.Contains(etapa)) continue;
-            string? motivo = chave switch
-            {
-                "nunca_negacao_headline" => declaracao?.FormaHeadline.Contains("negacao") == true ? "a declaração traz negacao na headline"
-                    : Acha(peca.Headline, MarcadoresDeNegacao) is { } m1 ? $"headline em negação (\"{m1}\")" : null,
-                "nunca_prova_sub_mofu" => declaracao?.PapelSub == "prova" ? "a declaração traz prova na sub"
-                    : Acha(peca.Corpo, MarcadoresDeProva) is { } m2 ? $"prova na sub (\"{m2}\")" : null,
-                _ => declaracao?.TipoCta == "agendar_solicitar" ? "a declaração traz agendar_solicitar no CTA"
-                    : Acha(peca.Cta, MarcadoresDeReuniao) is { } m3 ? $"pedido de reunião no CTA (\"{m3}\")" : null,
-            };
-            var reprova = motivo is not null && r.Tipo == "proibicao" && r.Status == "fechada";
-            regras.Add(new RegraNoCrivo(chave, r.Id, r.Status, !reprova, motivo));
+            var (r, porque) = snapshot.RegraDaChaveCopy(chave);
+            if (r is null) { desligadas.Add((chave, porque)); continue; }
+            if (r.Tipo != "proibicao") continue;
+            if (!Casa(r, etapa, nicho)) continue;
+            var motivo = MotivoDaProibicao(chave, peca, declaracao);
+            if (motivo is null) regras.Add(new RegraNoCrivo(chave, r.Id, r.Status, true, null));
+            else if (r.Status != "fechada") regras.Add(new RegraNoCrivo(chave, r.Id, r.Status, true, $"aviso ({r.Status}): {motivo}"));
+            else regras.Add(new RegraNoCrivo(chave, r.Id, r.Status, false, motivo));
         }
         return new(snapshot.Sha, regras.All(x => x.Ok), regras, desligadas);
     }
 
-    /// <summary>A avaliação completa: a declaração (fora do vocabulário reprova) e o crivo. `Motivo` nulo = passou.</summary>
-    public static (Declaracao? Declaracao, ResultadoDoCrivo Crivo, string? Motivo) Avaliar(PecaDoModelo peca, string etapa, SnapshotDoVault? snapshot)
+    /// <summary>A avaliação completa: a declaração (fora do vocabulário reprova), o crivo do vault e a régua em código (a mesma
+    /// do crivo da publicação, para a peça que passa aqui não ser recusada no Publicar). `Motivo` nulo = passou. A régua
+    /// reprovada vira `Ok = false` mesmo sem vault: é reprovação certa, não "sem crivo".</summary>
+    public static (Declaracao? Declaracao, ResultadoDoCrivo Crivo, string? Motivo) Avaliar(PecaDoModelo peca, string etapa, SnapshotDoVault? snapshot, string? nicho = null, string? tipo = null, string? marca = null)
     {
         var d = DeclaracaoDe(peca);
-        var crivo = Crivar(peca, d, etapa, snapshot);
+        var crivo = Crivar(peca, d, etapa, snapshot, nicho);
+        var regua = RegrasDaRegua(peca.Headline, peca.Corpo, peca.Cta, etapa, tipo, marca);
+        if (regua.Count > 0) crivo = crivo with { Ok = false, Regua = regua };
         var motivo = d is null ? "a peça veio sem a estrutura declarada no vocabulário" : crivo.MotivoDaReprovacao;
         return (d, crivo, motivo);
     }
@@ -547,24 +705,47 @@ public static class PromptDoCopy
         sha = r.Sha,
         regras = r.Regras.Select(x => new { chave = x.Chave, id = x.Id, status = x.Status, ok = x.Ok, motivo = x.Motivo }),
         desligadas = r.Desligadas.Select(x => new { chave = x.Chave, motivo = x.Motivo }),
+        regua = r.Regua.Count > 0 ? r.Regua : null,
         em = DateTime.UtcNow.ToString("o"), fase,
     }, new JsonSerializerOptions { DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull });
 
-    /// <summary>misto: vídeo vai a TOFU/MOFU/BOFU, estático a MOFU/BOFU; o resto na primeira etapa (etapas.ts: repartirMisto).</summary>
-    public static List<ItemDoPedido> Normalizar(IEnumerable<ItemDoPedido> itens)
+    static readonly string[] Tipos = ["estatico", "video"];
+    static readonly string[] Funis = ["tofu", "mofu", "bofu", "misto"];
+
+    /// <summary>etapas.ts normalizarPedido + repartirMisto. Item com tipo ou funil fora da lista, ou sem peça, é IGNORADO (nunca
+    /// coagido para outro pedido pago), e o corte no teto por item é avisado; os dois vão para `ajustes`. Depois, o misto se
+    /// reparte: vídeo em TOFU/MOFU/BOFU, estático em MOFU/BOFU, o resto uma peça por etapa a partir da primeira, e itens
+    /// iguais se somam.</summary>
+    public static List<ItemDoPedido> Normalizar(IEnumerable<ItemDoPedido> itens, List<string>? ajustes = null)
     {
-        var saida = new List<ItemDoPedido>();
+        var validos = new List<ItemDoPedido>();
         foreach (var i in itens)
         {
-            var tipo = i.Tipo == "video" ? "video" : "estatico"; var funil = i.Funil.ToLowerInvariant();
-            var n = Math.Clamp(i.NPecas, 1, TetoPorItem);
-            if (funil != "misto") { saida.Add(new(tipo, funil is "tofu" or "bofu" ? funil : "mofu", n)); continue; }
-            var etapas = tipo == "video" ? new[] { "tofu", "mofu", "bofu" } : ["mofu", "bofu"];
-            var porEtapa = n / etapas.Length; var resto = n - porEtapa * etapas.Length;
-            for (var k = 0; k < etapas.Length; k++) { var q = porEtapa + (k == 0 ? resto : 0); if (q > 0) saida.Add(new(tipo, etapas[k], q)); }
+            if (i is null) continue;
+            var tipo = (i.Tipo ?? "").Trim().ToLowerInvariant(); var funil = (i.Funil ?? "").Trim().ToLowerInvariant();
+            if (!Tipos.Contains(tipo) || !Funis.Contains(funil) || i.NPecas < 1)
+            {
+                ajustes?.Add($"Item ignorado (tipo, funil ou número de peças inválido): {i.Tipo} {i.Funil} {i.NPecas}");
+                continue;
+            }
+            if (i.NPecas > TetoPorItem) ajustes?.Add($"{funil.ToUpperInvariant()}: pedi {i.NPecas}, o teto por item é {TetoPorItem}.");
+            validos.Add(new(tipo, funil, Math.Min(i.NPecas, TetoPorItem)));
         }
-        /* o mesmo (tipo, funil) só uma vez: soma */
-        return saida.GroupBy(x => (x.Tipo, x.Funil)).Select(g => new ItemDoPedido(g.Key.Tipo, g.Key.Funil, Math.Min(TetoPorItem, g.Sum(x => x.NPecas)))).ToList();
+        var saida = new List<ItemDoPedido>();
+        void Soma(string tipo, string funil, int n)
+        {
+            if (n <= 0) return;
+            var k = saida.FindIndex(x => x.Tipo == tipo && x.Funil == funil);
+            if (k >= 0) saida[k] = saida[k] with { NPecas = saida[k].NPecas + n }; else saida.Add(new(tipo, funil, n));
+        }
+        foreach (var it in validos)
+        {
+            if (it.Funil != "misto") { Soma(it.Tipo, it.Funil, it.NPecas); continue; }
+            var etapas = it.Tipo == "video" ? new[] { "tofu", "mofu", "bofu" } : ["mofu", "bofu"];
+            var porEtapa = it.NPecas / etapas.Length; var resto = it.NPecas - porEtapa * etapas.Length;
+            foreach (var f in etapas) { Soma(it.Tipo, f, porEtapa + (resto > 0 ? 1 : 0)); if (resto > 0) resto--; }
+        }
+        return saida;
     }
 
     public static string EtapaDoFunil(string funil) => funil.ToUpperInvariant() switch { "TOFU" => "TOFU", "BOFU" => "BOFU", _ => "MOFU" };

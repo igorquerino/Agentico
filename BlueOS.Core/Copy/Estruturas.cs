@@ -26,7 +26,8 @@ public static class Estruturas
         _ => estrutura.Replace('_', ' '),
     };
 
-    /// <summary>A ÚNICA tradução do tipo do CTA para o enum da Meta (call_to_action_type).</summary>
+    /// <summary>A ÚNICA tradução do tipo do CTA para o enum da Meta (call_to_action_type), a META_CTA_DE do V1
+    /// (estruturas.ts): só valores da lista que a Marketing API aceita para anúncio de lead.</summary>
     public static string CtaParaMeta(string tipoCta) => tipoCta switch
     {
         "saiba_mais" or "ver_conhecer" => "LEARN_MORE",
@@ -34,7 +35,7 @@ public static class Estruturas
         "falar" => "CONTACT_US",
         "agendar_solicitar" => "GET_QUOTE",
         "comecar" => "SIGN_UP",
-        "inscrever" => "SUBSCRIBE",
+        "inscrever" => "SIGN_UP",
         "baixar" => "DOWNLOAD",
         "comprar" => "SHOP_NOW",
         _ => "LEARN_MORE",

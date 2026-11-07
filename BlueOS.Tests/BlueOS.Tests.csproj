@@ -20,6 +20,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\BlueOS.Core\BlueOS.Core.csproj" />
+    <ProjectReference Include="..\BlueOS.Api\BlueOS.Api.csproj" />
   </ItemGroup>
 
 </Project>
