@@ -86,9 +86,32 @@ public static class CsRegras
             if (!raiz.TryGetProperty(k, out var p) || p.ValueKind != JsonValueKind.Object) continue;
             if (p.TryGetProperty("desligado", out var d) && d.ValueKind == JsonValueKind.True) continue;
             var semDados = p.TryGetProperty("sem_dados", out var sd) && sd.ValueKind == JsonValueKind.True;
-            if (!semDados && p.TryGetProperty("score", out var s) && s.ValueKind == JsonValueKind.Number) return false;
+            if (!semDados && p.TryGetProperty("score", out var s) && NumeroFinitoNoJs(s)) return false;
         }
         return true;
+    }
+
+    /// <summary>
+    /// `Number.isFinite(Number(p.score ?? NaN))` do V1 (pilares.ts): número, ou TEXTO que o JS lê como
+    /// número finito — "45" das análises importadas do V0, " 4.5e1 ", "0x10" e até o vazio, que o JS lê
+    /// como 0 —, e true/false (1/0). null, objeto e lista não contam (o motor nunca grava lista ali).
+    /// </summary>
+    public static bool NumeroFinitoNoJs(JsonElement v) => v.ValueKind switch
+    {
+        JsonValueKind.Number => v.TryGetDouble(out var d) && double.IsFinite(d),
+        JsonValueKind.String => TextoFinitoNoJs(v.GetString()),
+        JsonValueKind.True or JsonValueKind.False => true,
+        _ => false,
+    };
+
+    static readonly Regex DecimalDoJs = new(@"^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$");
+    static readonly Regex InteiroComBaseDoJs = new("^0([xX][0-9a-fA-F]+|[oO][0-7]+|[bB][01]+)$");
+    static bool TextoFinitoNoJs(string? texto)
+    {
+        var t = (texto ?? "").Trim();
+        if (t == "") return true;
+        if (InteiroComBaseDoJs.IsMatch(t)) return true;
+        return DecimalDoJs.IsMatch(t) && double.TryParse(t, NumberStyles.Float, CultureInfo.InvariantCulture, out var d) && double.IsFinite(d);
     }
 
     /// <summary>A nota de UMA linha de análise. Nula (e "sem_base") quando não há valor_gerado ou nenhum pilar tem fonte.</summary>
@@ -133,6 +156,101 @@ public static class CsRegras
         if (squadIdsDaSessao is null) return true;
         var permitidos = squadIdsDaSessao.ToHashSet(StringComparer.OrdinalIgnoreCase);
         return (squadsDoCliente ?? []).Any(permitidos.Contains);
+    }
+
+    /// <summary>/me: o mapa nome do squad → tribo. Nome repetido (squad arquivado convivendo com o vivo) ou vazio
+    /// não derruba a rota: o ÚLTIMO vence, como o `Object.fromEntries` do V1 (app/api/os/me).</summary>
+    public static Dictionary<string, string?> TriboPorSquad(IEnumerable<(string Nome, string? Tribo)> squads)
+    {
+        var mapa = new Dictionary<string, string?>();
+        foreach (var (nome, tribo) in squads) mapa[nome ?? ""] = tribo;
+        return mapa;
+    }
+
+    /* ── PRA QUEM A TASK DO CLIENTE PODE IR (app/api/os/tasks/membros, lib/os/nivel-task.ts e
+       squadsDoClienteNoAlcance em lib/os/vinculo.ts) ─────────────────────────────────────────
+       O NÍVEL de quem pergunta: global (escopo global ou vínculo de departamento) · tribo
+       (escopo tribo) · squad (os cargos que veem o squad inteiro) · proprio (todo o resto:
+       gestor, operador, designer, editor...), que só atribui a si mesmo — o seletor vira
+       "Eu mesmo". O TIME que aparece é o dos squads EFETIVOS do cliente (os vigentes; sem
+       nenhum vigente, os encerrados, pro cliente em churn não perder o squad de onde saiu)
+       CRUZADOS com o alcance de quem pergunta. Decisão do Pedro em 30/09/2026: cliente de
+       dois squads vivos mostra a cada head só o time DELE; o head do ABYSSAL não vê nem
+       atribui ao time do GHOST. É interseção, nunca união. */
+    public const string NivelGlobal = "global", NivelTribo = "tribo", NivelSquad = "squad", NivelProprio = "proprio";
+    public static readonly HashSet<string> CargosQueVeemOSquad = ["head", "produtor_video", "seo", "social_media", "comercial", "consultor_comercial"];
+
+    /// <summary>Uma linha ativa de `membros` de quem pergunta: o escopo do cargo, se é vínculo de departamento e o cargo.</summary>
+    public sealed record MembroAtivo(string? RoleEscopo, bool TemDepartamento, string? RoleSlug);
+
+    public static string NivelDaTask(IEnumerable<MembroAtivo>? ativos)
+    {
+        var lista = (ativos ?? []).ToList();
+        if (lista.Any(m => m.RoleEscopo == "global" || m.TemDepartamento)) return NivelGlobal;
+        if (lista.Any(m => m.RoleEscopo == "tribo")) return NivelTribo;
+        if (lista.Any(m => CargosQueVeemOSquad.Contains((m.RoleSlug ?? "").Trim().ToLowerInvariant()))) return NivelSquad;
+        return NivelProprio;
+    }
+
+    /// <summary>
+    /// Os squads cujos membros podem receber a task do cliente. `alcance` null = global (sem recorte).
+    /// Vazio = ninguém além de quem pergunta. null = cliente SEM vínculo nenhum perguntado por quem é
+    /// global: a operação inteira, o único caso sem recorte de cliente (como no V1).
+    /// </summary>
+    public static IReadOnlyList<string>? SquadsQueRecebemATask(string nivel, IEnumerable<(string SquadId, bool Vigente)> vinculosDoCliente, IReadOnlyList<string>? alcance)
+    {
+        if (nivel == NivelProprio) return [];
+        var todos = vinculosDoCliente.ToList();
+        var vigentes = todos.Where(v => v.Vigente).ToList();
+        var squads = (vigentes.Count > 0 ? vigentes : todos).Select(v => v.SquadId).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        if (squads.Count == 0) return alcance;
+        if (alcance is null) return squads;
+        var podeVer = alcance.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        return squads.Where(podeVer.Contains).ToList();
+    }
+
+    /* ── O DOSSIÊ: QUAL SQUAD SE LÊ E QUAIS ABAS (app/api/cs/carteira?cliente=) ──────────────
+       O alcance ao cliente é pelo vínculo efetivo (vigente; sem vigente, o encerrado). A análise
+       é a do squad PEDIDO, se ele atende o cliente hoje (vigente) e está no alcance; senão a do
+       principal vigente (decisão do Pedro, 15/09/2026); sem vigente nenhum, a análise sem squad.
+       As abas são os vínculos vigentes que a sessão alcança, o principal primeiro. */
+    public interface IVinculoDoCliente
+    {
+        string SquadId { get; }
+        bool Principal { get; }
+        bool Vigente { get; }
+    }
+
+    /// <param name="vinculos">Na ordem do banco: o principal primeiro, depois o mais recente.</param>
+    /// <param name="alcance">Os squads da sessão; null = global.</param>
+    public static (bool NoAlcance, T? SquadDaAnalise, List<T> Abas) EscolherSquadDoDossie<T>(IReadOnlyList<T> vinculos, IReadOnlyList<string>? alcance, string? pedido)
+        where T : class, IVinculoDoCliente
+    {
+        static bool Mesmo(string a, string? b) => string.Equals(a, b, StringComparison.OrdinalIgnoreCase);
+        var vigentes = vinculos.Where(v => v.Vigente).ToList();
+        var efetivos = (vigentes.Count > 0 ? vigentes : vinculos.ToList()).Select(v => v.SquadId);
+        if (!ClienteNoAlcance(alcance, efetivos)) return (false, null, []);
+        bool Alcanca(string s) => alcance is null || alcance.Contains(s, StringComparer.OrdinalIgnoreCase);
+        var principal = vigentes.FirstOrDefault(v => v.Principal) ?? vigentes.FirstOrDefault();
+        var doPedido = pedido is not null && Alcanca(pedido) ? vigentes.FirstOrDefault(v => Mesmo(v.SquadId, pedido)) : null;
+        var abas = vigentes.Where(v => Alcanca(v.SquadId)).OrderByDescending(v => v.Principal).ToList();
+        return (true, doPedido ?? principal, abas);
+    }
+
+    /// <summary>
+    /// O portão do Sem Performance (app/api/cs/sem-performance), na ordem do V1: coordenador e acima (403),
+    /// squad no alcance (403), cliente no alcance pelos vínculos vigentes (403), squad atende o cliente
+    /// hoje (403), squad fixo ABYSSAL/DIVERS (409). `alcance` null = global. null = pode gravar.
+    /// </summary>
+    public static Recusa? PortaoDoSemPerformance(IEnumerable<string>? cargos, IReadOnlyList<string>? alcance, string squadId, IReadOnlyList<(string SquadId, string? Nome)> vigentes)
+    {
+        if (!PodeMudarSemPerformance(cargos)) return new($"Sem Performance: {MotivoSoCoordenador}", 403);
+        if (alcance is not null && !alcance.Contains(squadId, StringComparer.OrdinalIgnoreCase)) return new("squad fora do seu alcance", 403);
+        if (!ClienteNoAlcance(alcance, vigentes.Select(v => v.SquadId))) return new("cliente fora do seu alcance", 403);
+        var doSquad = vigentes.FirstOrDefault(v => string.Equals(v.SquadId, squadId, StringComparison.OrdinalIgnoreCase));
+        if (doSquad.SquadId is null) return new("este squad nao atende este cliente", 403);
+        if (SquadSemPerformanceFixo(doSquad.Nome)) return new($"Sem Performance: {AvisoSquadFixo}", 409);
+        return null;
     }
 
     /* ── O PONTO DE VISTA DE SQUAD (lib/os/contrato.ts) ─────────────────────── */
@@ -373,4 +491,12 @@ public static class CsRegras
     public static readonly string[] StatusDaCarteira = ["ativo", "onboarding", "aviso_previo", "churn", "pausado"];
     public static readonly string[] StatusDoRisco = ["ativo", "onboarding", "aviso_previo"];
     public const string LeituraDoFiltroFrio = "grupo frio MEDIDO: 3 dias corridos (fuso de Brasília) sem mensagem nenhuma no grupo, de qualquer lado.";
+    public const string LeituraDoFiltroFrioIndisponivel = "NÃO CONSEGUI MEDIR o silêncio dos grupos nesta chamada. A lista abaixo está incompleta por falha de leitura do WhatsApp, não porque só estes esfriaram.";
+
+    /// <summary>
+    /// O que `?grupo=frio` quer dizer, junto do dado (app/api/cs/carteira, decisão do Pedro em 01/10/2026):
+    /// se a leitura do WhatsApp falhou, a carteira vem inteira, NINGUÉM medido, e o texto diz "não consegui
+    /// medir" — sem ele, o chat afirmaria "nenhum cliente esfriou".
+    /// </summary>
+    public static string LeituraDoFiltro(bool silencioMedido) => silencioMedido ? LeituraDoFiltroFrio : LeituraDoFiltroFrioIndisponivel;
 }
