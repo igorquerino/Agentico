@@ -222,7 +222,8 @@
         var n = r.Decisao.Numeros;
         var cj = Cliente.Conjuntos.FirstOrDefault(x => x.AdsetId == r.MetaId);
         <article class="card rec @(r.Estado != EstadoDaRecomendacao.Pendente ? "decidida" : "")" style="--c:@CorDa(r.Acao)">
-            <header><b>@rotulo</b><span>@frase</span><span class="pill">@r.Estado.ToString().ToLowerInvariant()</span></header>
+            <header><b>@rotulo</b><span>@frase</span><span class="pill">@(r.Estado == EstadoDaRecomendacao.Incerto ? "incerto" : r.Estado.ToString().ToLowerInvariant())</span></header>
+            @if (r.Estado == EstadoDaRecomendacao.Incerto) { <p class="warn mini">incerto: a Meta não respondeu e a escrita pode ter acontecido. Confira no Gerenciador antes de repetir.</p> }
             <div class="cj"><b>@r.Nome</b>@(cj is not null ? $" · {cj.Etapa}" : "")@(r.Decisao.TemCopia ? $" · a cópia nasce pausada{(r.Decisao.CopiaDiarioCentavos is { } cd ? $" com {Dinheiro.ReaisCurto(cd)}/dia" : "")}" : "")</div>
             <div class="rnums">
                 @if (r.Acao == Acao.DUPLICAR)

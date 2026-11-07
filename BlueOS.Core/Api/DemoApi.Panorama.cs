@@ -35,7 +35,7 @@ public sealed partial class DemoApi
 
     void SemearPanorama()
     {
-        var agora = DateTime.Now;
+        var agora = Relogio.Agora;
         var p = Parametros;
 
         /* Aurora: o CS marcou risco crítico (ela chegou e ninguém respondeu no grupo). */
@@ -94,7 +94,7 @@ public sealed partial class DemoApi
 
     public async Task<PanoramaDoSquad> LerPanoramaAsync(string? squad)
     {
-        var agora = DateTime.Now;
+        var agora = Relogio.Agora;
         /* Os 5 do fluxo têm conjuntos de verdade: os KPIs saem do Ongoing. Os outros já vêm prontos. */
         foreach (var c in _clientes.Where(c => c.Sinais.Kpis is null && c.Conjuntos.Count > 0))
             c.Sinais.Kpis = (await LerOngoingAsync(c)).Kpis;
@@ -133,7 +133,7 @@ public sealed partial class DemoApi
             placarBase = placarBase with { Pontos = _pontos, Gestores = [new("Marina", 1390, false), new(Gestor, _pontos, true), new("Caio", 980, false), new("Júlia", 870, false)], AcendeuHoje = _acendeu.Take(6).ToList() };
             panorama = panorama with { Placar = placarBase };
         }
-        var saude = panorama.Resumo.SaudePct;
+        var saude = panorama.Resumo.SaudePct ?? 0;
         var squads = new List<LinhaDoRanking> { new("ATLAS", 88, false), new(panorama.Squad, saude, true), new("TRITÃO", 76, false) };
         return panorama with { Placar = panorama.Placar with { Squads = squads.OrderByDescending(s => s.Valor).ToList(), ACaminho = _aCaminho.ToList() } };
     }
@@ -153,7 +153,7 @@ public sealed partial class DemoApi
     public Task MarcarVistoAsync(string clienteSlug, string assinatura, bool visto)
     {
         _vistos.RemoveAll(v => v.ClienteSlug == clienteSlug);
-        if (visto) _vistos.Add(new Visto(clienteSlug, assinatura, DateTime.Now, Gestor));
+        if (visto) _vistos.Add(new Visto(clienteSlug, assinatura, Relogio.Agora, Gestor));
         Avisar();
         return Task.CompletedTask;
     }

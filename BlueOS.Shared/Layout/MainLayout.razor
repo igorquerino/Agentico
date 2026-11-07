@@ -30,19 +30,42 @@
                 </span>
             }
         </label>
-        <span class="live @(painel.Erro is not null ? "parado" : "")" title="@(painel.LidoEm is { } l ? $"Panorama lido às {l:HH:mm:ss}" : "")">
-            <i></i>@(painel.Erro is not null ? "sem leitura" : painel.Panorama is { } pv ? "ao vivo · " + pv.SinaisDeVida.FirstOrDefault()?.Texto.Replace("lida", "Meta lida") : "lendo…")
+        @* "ao vivo": a Meta é achada PELO NOME da fonte; sem leitura da Meta, fala da carteira. Falhou: "sem leitura há X". *@
+        <span class="live @(painel.Erro is not null ? "parado" : "")" title="@(painel.Erro ?? (painel.LidoEm is { } l ? $"Panorama lido às {l:HH:mm:ss}" : ""))">
+            <i></i>@(painel.Erro is not null ? Vida.SemLeitura(painel.LidoEm, DateTime.Now) : painel.Panorama is { } pv ? Vida.AoVivo(pv.SinaisDeVida, painel.LidoEm) : "lendo…")
         </span>
         @{ var interrompem = painel.Panorama?.Interrompem.ToList() ?? new(); }
-        <button type="button" class="bell @(interrompem.Count > 0 ? "on" : "")" title="@(interrompem.Count > 0 ? $"{interrompem.Count} alerta(s) de gravidade 1" : "nenhum alerta de gravidade 1")" @onclick="() => IrParaOMapa(interrompem.FirstOrDefault()?.Slug)">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg>
-            @if (interrompem.Count > 0) { <b>@interrompem.Count</b> }
-        </button>
+        <span class="sino">
+            <button type="button" class="bell @(interrompem.Count > 0 ? "on" : "")" title="@(interrompem.Count > 0 ? $"{interrompem.Count} alerta(s) de gravidade 1" : "nenhum alerta de gravidade 1")" aria-expanded="@(sinoAberto ? "true" : "false")" @onclick="() => sinoAberto = !sinoAberto">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg>
+                @if (interrompem.Count > 0) { <b>@interrompem.Count</b> }
+            </button>
+            @* o sino lista os g1 não vistos (cliente, desde quando, motivo); clicar numa linha = "ver no mapa". Nunca lista 2–6. *@
+            @if (sinoAberto)
+            {
+                <div class="sino-lista" role="menu">
+                    @if (interrompem.Count == 0) { <div class="sino-vazio">nenhum alerta de gravidade 1</div> }
+                    @foreach (var g1 in interrompem)
+                    {
+                        <button type="button" role="menuitem" @onclick="() => AbrirDoSino(g1.Slug)"><b>@g1.Nome</b><time>@(g1.Principal!.Desde is { } desde ? "desde " + Diagnostico.Relativo(desde, DateTime.Now) : "")</time><span>@g1.Principal!.Titulo · @g1.Principal!.Curto</span></button>
+                    }
+                </div>
+            }
+        </span>
         <button type="button" class="sq @(Fonte.Atual.EhDemo ? "demo" : "")" title="@Fonte.Atual.Origem — clique para trocar a fonte de dados" @onclick="() => mostrarFonte = true"><i></i>@(painel.Panorama?.Squad ?? Fonte.Config.SquadPadrao ?? "squad")</button>
         <span class="avatar" title="@(painel.Panorama?.Placar.Gestor)">@Iniciais(painel.Panorama?.Placar.Gestor)</span>
     </header>
+    @if (painel.AvisoDaConexao is { } avisoDaConexao)
+    {
+        <div class="aviso-conexao" role="status">
+            <span>@avisoDaConexao</span>
+            <button type="button" class="link" @onclick="() => mostrarFonte = true">trocar a fonte</button>
+            <button type="button" class="link" @onclick="painel.DispensarAvisoDaConexao">fechar</button>
+        </div>
+    }
     @if (interrompem.Count > 0)
     {
+        @* a faixa mostra o g1 MAIS ANTIGO (Interrompem já vem do mais antigo para o mais novo) *@
         var e = interrompem[0]; var al = e.Principal!;
         <div class="banner" role="alert">
             <i>1</i><b>@al.Titulo</b><span>@e.Nome · @al.Curto</span>
@@ -74,15 +97,29 @@
     System.Threading.Timer? relogio;
     DotNetObjectReference<MainLayout>? eu;
     IBlueApi? fonteVista;
+    bool sinoAberto;
+    long leituras, aplicada;
 
-    bool NaHome => new Uri(Nav.Uri).AbsolutePath.TrimEnd('/') == "";
+    /// <summary>Na home (o Panorama)? Pelo caminho relativo à base, para valer também com base path.</summary>
+    bool NaHome
+    {
+        get
+        {
+            var r = Nav.ToBaseRelativePath(Nav.Uri);
+            var fim = r.IndexOfAny(['?', '#']);
+            return (fim < 0 ? r : r[..fim]).TrimEnd('/') == "";
+        }
+    }
 
     protected override async Task OnInitializedAsync()
     {
         Fonte.Mudou += FonteMudou;
         painel.Mudou += PainelMudou;
+        painel.Reler += PediuLeitura;
         Nav.LocationChanged += (_, _) => InvokeAsync(StateHasChanged);
-        try { await Fonte.AutoConectarAsync(); } catch { }
+        /* a conexão automática roda aqui antes do Start: o erro dela aparece na barra, em vez de sumir num catch vazio */
+        try { await Fonte.AutoConectarAsync(); }
+        catch (Exception e) { painel.AvisarConexao($"A conexão automática falhou ({e.Message}). O app segue na fonte {Fonte.Atual.Origem}."); }
         await LerAsync();
         relogio = new System.Threading.Timer(_ => InvokeAsync(LerAsync), null, TimeSpan.FromSeconds(60), TimeSpan.FromSeconds(60));
     }
@@ -97,12 +134,22 @@
     {
         var api = Fonte.Atual;
         if (!ReferenceEquals(fonteVista, api)) { painel.Limpar(); fonteVista = api; }
+        /* o timer e cada Avisar leem em paralelo: uma leitura mais velha que a última aplicada (ou de outra fonte) é descartada */
+        var seq = ++leituras;
         painel.ComecouALer();
-        try { painel.Leu(await api.LerPanoramaAsync(Fonte.Config.SquadPadrao)); }
-        catch (Exception e) { painel.Falhou(e.Message); }
+        try
+        {
+            var lido = await api.LerPanoramaAsync(Fonte.Config.SquadPadrao);
+            if (seq < aplicada || !ReferenceEquals(api, Fonte.Atual)) return;
+            aplicada = seq;
+            painel.Leu(lido);
+        }
+        catch (Exception e) { if (seq >= aplicada && ReferenceEquals(api, Fonte.Atual)) painel.Falhou(e.Message); }
     }
 
     void FonteMudou() => InvokeAsync(LerAsync);
+    void PediuLeitura() => InvokeAsync(LerAsync);
+    void AbrirDoSino(string slug) { sinoAberto = false; IrParaOMapa(slug); }
     void PainelMudou() { achadas = painel.Achadas(); InvokeAsync(StateHasChanged); }
     void BuscaMudou() { achadas = painel.Achadas(); painel.Avisar(); }
 
@@ -118,9 +165,9 @@
         if (!NaHome) Nav.NavigateTo("");
     }
 
-    [JSInvokable] public Task Esc() => InvokeAsync(() => { painel.Busca = ""; painel.Foco = null; achadas = []; painel.Avisar(); });
+    [JSInvokable] public Task Esc() => InvokeAsync(() => { sinoAberto = false; painel.Busca = ""; painel.Foco = null; achadas = []; painel.Avisar(); });
 
     static string Iniciais(string? nome) => string.IsNullOrWhiteSpace(nome) ? "?" : string.Concat(nome.Split(' ', StringSplitOptions.RemoveEmptyEntries).Take(2).Select(p => char.ToUpperInvariant(p[0])));
 
-    public void Dispose() { Fonte.Mudou -= FonteMudou; painel.Mudou -= PainelMudou; relogio?.Dispose(); eu?.Dispose(); }
+    public void Dispose() { Fonte.Mudou -= FonteMudou; painel.Mudou -= PainelMudou; painel.Reler -= PediuLeitura; relogio?.Dispose(); eu?.Dispose(); }
 }

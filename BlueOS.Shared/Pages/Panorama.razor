@@ -20,63 +20,77 @@ else
     var placar = p?.Placar;
     var achados = Painel.Achadas().Select(e => e.Slug).ToHashSet();
     var buscando = Painel.Busca.Length > 0;
+    /* sem nenhum KPI lido (V1 e API sem a Meta), o resumo diz "—" em vez de "R$ 0 de R$ X" e "0 de 0 MQL" */
+    var temKpis = p is not null && p.Estrelas.Any(e => e.Cliente.Sinais.Kpis is not null);
+    var comPontos = placar is { GestoresNoSquad: > 0 };
     <section class="lay" @onclick="FecharPopover">
         <aside class="left">
             <div class="greet">
                 <h1>@Saudacao, <b>@(placar?.Gestor ?? "gestor")</b>.</h1>
                 @if (resumo is null) { <p>Lendo a carteira do squad…</p> }
-                else if (resumo.PrecisamDeVoce == 0) { <p>Os <b class="ok">@resumo.Clientes</b> orbitam em dia. Nada precisa de você agora.</p> }
+                else if (resumo.Clientes == 0) { <p>Nenhum cliente neste squad.</p> }
+                else if (resumo.PrecisamDeVoce == 0 && resumo.EmDia == resumo.Clientes) { <p>Os <b class="ok">@resumo.Clientes</b> orbitam em dia. Nada precisa de você agora.</p> }
+                else if (resumo.PrecisamDeVoce == 0) { <p>Nada precisa de você agora. <b class="ok">@resumo.EmDia</b> dos <b>@resumo.Clientes</b> orbitam em dia.</p> }
                 else { <p><b class="att">@resumo.PrecisamDeVoce</b> dos <b>@resumo.Clientes</b> precisam de você. <b class="ok">@resumo.EmDia</b> orbitam em dia.</p> }
                 <div class="meta">@Agora.ToString("dddd, d 'de' MMMM", Pt) · @Agora.ToString("HH:mm") · dia @Agora.Day de @DateTime.DaysInMonth(Agora.Year, Agora.Month)</div>
             </div>
             <div class="card">
                 <h3>Squad @(p?.Squad ?? "") <small>@(resumo?.Clientes ?? 0) clientes</small></h3>
+                @if (p is not null && p.Squads.Count > 1 && !string.Equals(Fonte.Config.SquadPadrao, p.Squad, StringComparison.OrdinalIgnoreCase))
+                {
+                    <p class="text-3 mini">@(Fonte.Config.SquadPadrao is null ? "sem squad escolhido" : $"o squad {Fonte.Config.SquadPadrao} não está nesta carteira"): este é o 1º em ordem alfabética. Escolha o squad nos chips do Start.</p>
+                }
                 @if (resumo is not null)
                 {
                     <div class="sum">
                         <div class="r"><span>em automação</span><b class="ok">@resumo.EmAutomacao</b></div>
                         <div class="r"><span>precisam de você</span><b class="@(resumo.PrecisamDeVoce > 0 ? "att" : "ok")">@resumo.PrecisamDeVoce</b></div>
-                        <div class="r"><span>gasto do mês</span><b>@Curto(resumo.GastoCentavos) <small>de @Curto(resumo.BudgetCentavos)</small></b></div>
-                        <div class="bar"><i style="width:@Pct(resumo.GastoCentavos, resumo.BudgetCentavos)%"></i></div>
-                        <div class="r"><span>MQL vs meta</span><b>@resumo.Mql <small>de @resumo.MetaMql</small></b></div>
-                        <div class="bar aqua"><i style="width:@Pct(resumo.Mql, resumo.MetaMql)%"></i></div>
+                        <div class="r"><span>gasto do mês</span><b>@(temKpis ? Curto(resumo.GastoCentavos) : "—") @if (temKpis) { <small>de @Curto(resumo.BudgetCentavos)</small> }</b></div>
+                        <div class="bar"><i style="width:@(temKpis ? Pct(resumo.GastoCentavos, resumo.BudgetCentavos) : 0)%"></i></div>
+                        <div class="r"><span>MQL vs meta</span><b>@(temKpis ? resumo.Mql.ToString() : "—") @if (temKpis) { <small>de @resumo.MetaMql</small> }</b></div>
+                        <div class="bar aqua"><i style="width:@(temKpis ? Pct(resumo.Mql, resumo.MetaMql) : 0)%"></i></div>
                         <div class="r"><span>R$ por MQL</span><b>@(resumo.CustoMedioPorMqlCentavos is { } c ? (c / 100).ToString() : "—") <small>teto médio @(resumo.TetoMedioCentavos is { } t ? (t / 100).ToString() : "—")</small></b></div>
                     </div>
                 }
             </div>
-            <div class="card stamps">
-                <h3>Sinais de vida <small style="color:var(--aqua)">@(Painel.Lendo ? "lendo…" : "vigiando agora")</small></h3>
-                @if (p is not null) { foreach (var s in p.SinaisDeVida) { <div class="@(s.Ruim ? "bad" : "")"><span>@s.Fonte</span><b>@s.Texto</b></div> } }
+            <div class="card stamps @(Painel.Erro is not null ? "parado" : "")">
+                <h3>Sinais de vida @if (Painel.Erro is not null) { <small style="color:var(--g3)">@Vida.SemLeitura(Painel.LidoEm, DateTime.Now)</small> } else { <small style="color:var(--aqua)">@(Painel.Lendo ? "lendo…" : "vigiando agora")</small> }</h3>
+                @if (p is not null) { foreach (var s in p.SinaisDeVida) { <div class="@(s.Ruim ? "bad" : !s.Vigiado ? "nao-vigiado" : "")"><span>@s.Fonte</span><b>@s.Texto</b></div> } }
             </div>
         </aside>
 
         <section class="orbit">
             <div class="map @(buscando ? "busca" : "") @(resumo is { PrecisamDeVoce: 0 } ? "calmo" : "") @(p is null ? "skeleton" : "")" style="--saude:@(resumo?.SaudePct ?? 0)%">
-                <div class="ring r4"><em>@(resumo is null ? "" : $"{resumo.EmDia} em dia · orbitam quietos")</em></div>
+                <div class="ring r4"><em>@(resumo is null ? "" : resumo.Clientes == 0 ? "nenhum cliente neste squad" : $"{resumo.EmDia} em dia · orbitam quietos")</em></div>
                 <div class="ring r3"><em>5–6</em></div>
                 <div class="ring r2"><em>3–4</em></div>
                 <div class="ring r1"><em>1–2</em></div>
                 <div class="hub"><div class="in">
                     <span class="l">Saúde do squad</span>
-                    <span class="v @(saudeSobe ? "sobe" : "")">@(resumo?.SaudePct ?? 0)%</span>
+                    <span class="v @(saudeSobe ? "sobe" : "")" aria-live="polite">@(resumo?.SaudePct is { } saude ? $"{saude}%" : "—")</span>
                     <span class="d">@(resumo is null ? "" : $"{resumo.EmDia} de {resumo.Clientes} em dia")@(placar is { SaudeOntemPct: > 0 } pl ? $" · {(resumo!.SaudePct >= pl.SaudeOntemPct ? "↑" : "↓")} ontem {pl.SaudeOntemPct}" : "")</span>
                     <span class="d2">@(placar is null ? "" : $"{placar.DiasSemVermelho} d sem vermelho · recorde {placar.RecordeSemVermelho}")</span>
                 </div></div>
                 @if (p is not null)
                 {
-                    foreach (var e in p.Estrelas)
+                    @* Leitor de tela: o mapa é uma lista de estrelas, na ordem de atenção (gravidade, depois os em dia em ordem alfabética), e todas entram no Tab. *@
+                    <div class="estrelas" role="list" aria-label="@($"Clientes do squad {p.Squad}")">
+                    @foreach (var e in p.Estrelas)
                     {
                         var a = e.Principal;
                         var acendendo = acendem.ContainsKey(e.Slug);
                         var classe = $"s {(a is null ? "ok" : "g" + (int)a.Gravidade)} {(Math.Cos(e.Posicao.Angulo * Math.PI / 180) < 0 ? "l" : "")} {(e.EstaVista ? "visto" : "")} {(Painel.Foco == e.Slug ? "aberta" : "")} {(buscando && achados.Contains(e.Slug) ? "hit" : "")} {(acendendo ? "acende" : "")}";
-                        <button type="button" @key="e.Slug" class="@classe" style="@EstiloDa(e)" title="@e.Nome" tabindex="@(a is null ? -1 : 0)" @onclick="() => Abrir(e)" @onclick:stopPropagation="true" @onkeydown="k => Tecla(k, e)">
+                        <div class="estrela" role="listitem" @key="e.Slug">
+                        <button type="button" class="@classe" style="@EstiloDa(e)" title="@e.Nome" aria-label="@RotuloDaEstrela(e)" tabindex="0" @onclick="() => Abrir(e)" @onclick:stopPropagation="true" @onkeydown="k => Tecla(k, e)">
                             <b>
                                 @if (a is not null) { <em class="g@((int)a.Gravidade)">@((int)a.Gravidade)</em> }
                                 @e.Nome<small>@(a is null ? (e.DecisoesPendentes > 0 ? $"em dia · {e.DecisoesPendentes} decisão(ões) do agente esperando você" : "em dia") : e.EstaVista ? $"{a.Curto} · visto às {e.Visto!.Em:HH:mm}" : a.Curto)</small>
                             </b>
                         </button>
-                        @if (acendendo) { <span class="chip-pts" style="@ChipDa(e)">+@acendem[e.Slug] pts</span> }
+                        @if (acendendo && comPontos) { <span class="chip-pts" style="@ChipDa(e)">+@acendem[e.Slug] pts</span> }
+                        </div>
                     }
+                    </div>
                     @if (Painel.Foco is { } foco && p.Estrelas.FirstOrDefault(x => x.Slug == foco) is { } aberta)
                     {
                         <Aprofundamento Estrela="aberta" Api="Fonte.Atual" Fechar="FecharPopover" Aviso="Avisar" />
@@ -116,13 +130,13 @@ else
 
 @if (toast is not null)
 {
+    @* toast é HTML: tudo o que vem de fora (nome do cliente, mensagem de erro) entra codificado em AvisarHtml/Avisar *@
     <div class="toast @(toastNeutro ? "neutro" : "")"><i>@(toastNeutro ? "·" : "✓")</i><span>@((MarkupString)toast)</span></div>
 }
 
 @code {
     [CascadingParameter] public required Painel Painel { get; set; }
     static readonly System.Globalization.CultureInfo Pt = new("pt-BR");
-    static readonly double[] Fator = [0, .193, .279, .364, .479];
 
     PanoramaDoSquad? pan;
     DateTime Agora => pan?.Agora ?? DateTime.Now;
@@ -150,7 +164,13 @@ else
     /* Compara com a leitura anterior: alerta que sumiu = estrela acendeu (animação + chip de pontos + placar subindo). */
     void Absorver(PanoramaDoSquad? novo)
     {
-        if (novo is null || ReferenceEquals(novo, pan)) return;
+        if (novo is null)
+        {
+            /* a fonte mudou (Painel.Limpar): o mapa e a memória do "acendeu" da fonte anterior não ficam na tela */
+            pan = null; anterior.Clear(); acendem.Clear(); saudeAnterior = null; saudeSobe = false;
+            return;
+        }
+        if (ReferenceEquals(novo, pan)) return;
         var acesas = new List<(string Slug, Gravidade G)>();
         foreach (var e in novo.Estrelas)
         {
@@ -161,8 +181,10 @@ else
         {
             foreach (var (slug, g) in acesas) acendem[slug] = Gravidades.Pontos(g);
             saudeSobe = novo.Resumo.SaudePct > (saudeAnterior ?? novo.Resumo.SaudePct);
-            var nomes = string.Join(", ", acesas.Select(x => novo.Estrelas.First(e => e.Slug == x.Slug).Nome));
-            Avisar($"<b>{nomes}</b> acendeu verde · <em>+{acesas.Sum(x => Gravidades.Pontos(x.G))} pts</em> · em instantes desliza pra órbita de fora", neutro: false, segundos: 6);
+            var nomes = string.Join(", ", acesas.Select(x => System.Net.WebUtility.HtmlEncode(novo.Estrelas.First(e => e.Slug == x.Slug).Nome)));
+            /* sem placar (fontes reais, ainda sem a rota de pontos), o toast não fala em pontos */
+            var pontos = novo.Placar.GestoresNoSquad > 0 ? $" · <em>+{acesas.Sum(x => Gravidades.Pontos(x.G))} pts</em>" : "";
+            AvisarHtml($"<b>{nomes}</b> acendeu verde{pontos} · em instantes desliza pra órbita de fora", neutro: false, segundos: 6);
             _ = Task.Delay(3200).ContinueWith(_ => InvokeAsync(() => { acendem.Clear(); saudeSobe = false; StateHasChanged(); }));
         }
         saudeAnterior = novo.Resumo.SaudePct;
@@ -171,14 +193,14 @@ else
 
     string EstiloDa(Estrela e)
     {
-        var f = Fator[e.Posicao.Anel] - (e.Posicao.Volta > 0 ? .03 : 0);
+        var f = Orbita.Fator(e.Posicao.Anel) - (e.Posicao.Volta > 0 ? .03 : 0);
         return $"--a:{e.Posicao.Angulo.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture)}deg;--r:calc(var(--mapa) * {f.ToString("0.000", System.Globalization.CultureInfo.InvariantCulture)})";
     }
 
     string ChipDa(Estrela e)
     {
         var rad = e.Posicao.Angulo * Math.PI / 180;
-        var f = Fator[e.Posicao.Anel];
+        var f = Orbita.Fator(e.Posicao.Anel);
         var cx = (Math.Cos(rad) * f).ToString("0.000", System.Globalization.CultureInfo.InvariantCulture);
         var cy = (Math.Sin(rad) * f).ToString("0.000", System.Globalization.CultureInfo.InvariantCulture);
         return $"left:calc(50% + var(--mapa) * {cx});top:calc(50% + var(--mapa) * {cy} - 26px)";
@@ -195,9 +217,16 @@ else
     void FecharPopover() { if (Painel.Foco is not null) { Painel.Foco = null; Painel.Avisar(); } }
     void Tecla(KeyboardEventArgs k, Estrela e) { if (k.Key is "Enter" or " ") Abrir(e); }
 
-    Task Avisar(string texto) => Avisar(texto, neutro: true, segundos: 4);
-    Task Avisar(string texto, bool neutro, int segundos)
+    /// <summary>"LogTech Frotas, gravidade 1, automação parou, parou ontem 07:30 · token vencido" (o leitor de tela lê o mapa assim).</summary>
+    static string RotuloDaEstrela(Estrela e) => e.Principal is { } a
+        ? $"{e.Nome}, gravidade {(int)a.Gravidade}, {Gravidades.Rotulo(a.Gravidade)}, {a.Curto}{(e.EstaVista ? ", visto" : "")}"
+        : $"{e.Nome}, em dia{(e.DecisoesPendentes > 0 ? $", {e.DecisoesPendentes} decisão(ões) do agente esperando você" : "")}";
+
+    /// <summary>Texto puro (vem do aprofundamento e pode ter o nome do cliente): codificado antes de virar HTML.</summary>
+    Task Avisar(string texto) => AvisarHtml(System.Net.WebUtility.HtmlEncode(texto), neutro: true, segundos: 4);
+    Task AvisarHtml(string html, bool neutro, int segundos)
     {
+        var texto = html;
         toastCts?.Cancel(); toastCts = new();
         toast = texto; toastNeutro = neutro;
         var ct = toastCts.Token;

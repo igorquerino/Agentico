@@ -14,13 +14,14 @@
         <label>Responsável (dono do negócio)<input @bind="Cliente.Ficha.Responsavel" /></label>
         <label>E-mail / contato principal<input @bind="Cliente.Ficha.ContatoPrincipal" /></label>
         <label>WhatsApp<input @bind="Cliente.Ficha.Whatsapp" /></label>
-        <label>Site<input @bind="Cliente.Ficha.Site" placeholder="https://" /></label>
+        <label>Site<input value="@Cliente.Ficha.Site" placeholder="—" disabled title="edite no V1 (coordenador)" /></label>
         <label>CNPJ<input @bind="Cliente.Ficha.Cnpj" /></label>
         <label>Razão social<input @bind="Cliente.Ficha.RazaoSocial" /></label>
-        <label>Modalidade<select @bind="Cliente.Ficha.Modalidade"><option value="">—</option><option value="mrr">MRR</option><option value="tcv">TCV</option></select></label>
-        <label>@(Cliente.Ficha.Modalidade == "tcv" ? "Valor do contrato" : "MRR")<input @bind="valorContrato" placeholder="ex.: 2.500" /></label>
-        <label>Vencimento<input type="date" @bind="Cliente.Ficha.DataVencimento" /></label>
+        <label>Modalidade<input value="@(Cliente.Ficha.Modalidade switch { "mrr" => "MRR", "tcv" => "TCV", _ => "—" })" disabled title="edite no V1 (coordenador)" /></label>
+        <label>@(Cliente.Ficha.Modalidade == "tcv" ? "Valor do contrato" : "MRR")<input value="@valorContrato" placeholder="—" disabled title="edite no V1 (coordenador)" /></label>
+        <label>Vencimento<input type="date" value="@(Cliente.Ficha.DataVencimento?.ToString("yyyy-MM-dd"))" disabled title="edite no V1 (coordenador)" /></label>
     </div>
+    <p class="text-3 mini">Site, modalidade, valor do contrato e vencimento ficam só para leitura: nenhuma fonte grava esses campos pelo app. Edite no V1 (coordenador).</p>
 }
 else if (secao == "ICP")
 {
@@ -107,7 +108,7 @@ else
         @if (formularios is { Count: > 0 })
         {
             <label>Formulário
-                <select @bind="formularioId">
+                <select @bind="formularioId" @bind:after="TrocouFormulario">
                     @foreach (var f in formularios) { <option value="@f.Id">[@f.Status] @f.Nome · @f.Leads leads · @(f.CriadoEm?.ToString("dd/MM") ?? "")</option> }
                 </select>
             </label>
@@ -120,7 +121,7 @@ else
                     <div class="pergunta-form">
                         <div><strong>@p.Rotulo</strong> <span class="text-3 mini">campo <code>@p.Chave</code></span></div>
                         <table class="tabela compacta">
-                            <thead><tr><th>Resposta</th><th>Forte</th><th>Média</th><th>Eliminatória</th><th>Ignorar</th></tr></thead>
+                            <thead><tr><th>Resposta</th><th>Forte</th><th>Média</th><th>Eliminatória</th><th>Sem classe (lead fica pendente)</th></tr></thead>
                             <tbody>
                                 @foreach (var o in p.Opcoes)
                                 {
@@ -140,8 +141,9 @@ else
                 }
                 <div class="acoes">
                     <button type="button" class="btn btn-destaque" @onclick="MontarReguaDoFormulario" disabled="@(deEscolha.Count == 0)">Montar a régua com essas escolhas</button>
-                    <span class="text-3 mini">a régua aparece na tabela abaixo para você conferir e salvar</span>
+                    <span class="text-3 mini">a régua aparece na tabela abaixo para você conferir e salvar; as perguntas de outros formulários e as manuais ficam</span>
                 </div>
+                @if (avisoSemClasse is not null) { <p class="warn mini">@avisoSemClasse</p> }
             }
         }
         @if (erroFormularios is not null) { <p class="erro">@erroFormularios</p> }
@@ -171,7 +173,12 @@ else
         <div class="grade-2">
             <label>Teto por MQL do PPL (R$)<input @bind="teto" placeholder="ex.: 60" /></label>
         </div>
-        <div class="acoes"><button type="button" class="btn btn-destaque" @onclick="SalvarMql" disabled="@(ocupado || problemas.Count > 0)">Salvar critério de MQL</button></div>
+        @{ var tt = TetoDoTexto(teto); }
+        @if (!tt.Ok) { <p class="erro">@tt.Erro</p> }
+        <div class="acoes">
+            <button type="button" class="btn btn-destaque" @onclick="SalvarMql" disabled="@(ocupado || problemas.Count > 0 || !tt.Ok)">Salvar critério de MQL</button>
+            @if (salvoMql) { <span class="ok mini">salvo</span> }
+        </div>
     </div>
 }
 
@@ -197,7 +204,8 @@ else
 
     static readonly string[] Secoes = ["Cadastro", "ICP", "Produto", "Estratégia", "Tráfego", "Critério de MQL"];
     string secao = "Cadastro";
-    string? erro; bool ocupado; bool salvo;
+    string? erro; bool ocupado; bool salvo; bool salvoMql;
+    string? avisoSemClasse;
     string valorContrato = "", dores = "", desejos = "", canais = "";
     string nicho = "", budget = "", teto = "";
     List<PerguntaDaRegua> rascunho = new();
@@ -246,13 +254,17 @@ else
 
     static string ValorDaRegua(OpcaoDoFormulario o) => string.IsNullOrWhiteSpace(o.Chave) ? o.Valor : o.Chave;
 
+    void TrocouFormulario() { avisoSemClasse = null; PreencherDaReguaAtual(); }
+
     void MontarReguaDoFormulario()
     {
         if (FormularioEscolhido is null) return;
         var nova = new List<PerguntaDaRegua>();
+        var semClasse = 0;
         foreach (var p in FormularioEscolhido.Perguntas.Where(x => x.Opcoes.Count > 0))
         {
             var q = new PerguntaDaRegua { Nome = p.Chave, Rotulo = p.Rotulo };
+            var semClasseAqui = 0;
             foreach (var o in p.Opcoes)
                 switch (classe.GetValueOrDefault(p.Chave + "\u0001" + o.Valor, "ignorar"))
                 {
@@ -260,12 +272,19 @@ else
                     case "forte": q.Forte.Add(ValorDaRegua(o)); break;
                     case "media": q.Media.Add(ValorDaRegua(o)); break;
                     case "elim": q.Elim.Add(ValorDaRegua(o)); break;
+                    default: semClasseAqui++; break;
                 }
-            if (q.Forte.Count + q.Media.Count + q.Elim.Count > 0) nova.Add(q);
+            if (q.Forte.Count + q.Media.Count + q.Elim.Count > 0) { nova.Add(q); semClasse += semClasseAqui; }
         }
         if (nova.Count == 0) { erroFormularios = "marque pelo menos uma resposta como forte, média ou eliminatória."; return; }
         erroFormularios = null;
-        rascunho = nova;
+        /* mescla: só as perguntas DESTE formulário são trocadas; as de outros formulários e as manuais ficam */
+        var doFormulario = FormularioEscolhido.Perguntas.Select(x => Regua.Normalizar(x.Chave)).ToHashSet();
+        bool DesteFormulario(PerguntaDaRegua q) => doFormulario.Contains(Regua.Normalizar(q.Nome)) || q.Chaves.Any(c => doFormulario.Contains(Regua.Normalizar(c)));
+        rascunho = rascunho.Where(q => !string.IsNullOrWhiteSpace(q.Nome) && !DesteFormulario(q)).Concat(nova).ToList();
+        /* a régua só classifica o que foi marcado: o lead com uma resposta sem classe fica Pendente e não conta como MQL */
+        avisoSemClasse = semClasse == 0 ? null
+            : $"{semClasse} resposta(s) ficaram sem classe: o lead que der uma delas fica pendente e não conta como MQL. Marque forte, média ou eliminatória se ela decide.";
     }
 
     protected override void OnParametersSet()
@@ -281,18 +300,32 @@ else
         teto = Dinheiro.NoCampo(Cliente.TetoMql);
         rascunho = Cliente.Regua?.Perguntas.Select(p => p.Clonar()).ToList() ?? new();
         if (rascunho.Count == 0) rascunho.Add(new PerguntaDaRegua());
-        formularios = null; formularioId = null; classe.Clear(); erroFormularios = null;
+        formularios = null; formularioId = null; classe.Clear(); erroFormularios = null; avisoSemClasse = null; salvoMql = false;
         /* O que trava o fluxo é o card Tráfego e o critério de MQL: a ficha abre neles. */
         secao = Pendente("Tráfego") ? "Tráfego" : Pendente("Critério de MQL") ? "Critério de MQL" : "Tráfego";
     }
 
-    /// <summary>Só Tráfego e Critério de MQL seguram o agente; o resto é cadastro opcional.</summary>
-    bool Pendente(string s) => s switch
+    /// <summary>Só Tráfego e Critério de MQL seguram o agente; o resto é cadastro opcional. Sai de Estagios.FichaCompleta
+    /// (nicho fora do catálogo e valores ≤ 0 também contam), a mesma regra que segura o fluxo.</summary>
+    bool Pendente(string s)
     {
-        "Tráfego" => Cliente.NichoSlug is null || Cliente.BudgetMensal is null,
-        "Critério de MQL" => Cliente.Regua is null || Cliente.Regua.Perguntas.Count == 0 || Cliente.TetoMql is null,
-        _ => false,
-    };
+        var pend = Estagios.FichaCompleta(Cliente).Pendencias;
+        return s switch
+        {
+            "Tráfego" => pend.Contains("nicho") || pend.Contains("budget mensal"),
+            "Critério de MQL" => pend.Contains("régua de MQL") || pend.Contains("teto por MQL"),
+            _ => false,
+        };
+    }
+
+    /// <summary>O teto como o budget: vazio = sem teto; texto que não é número ou valor ≤ 0 é erro e NÃO salva (antes virava null e parava o motor).</summary>
+    static (bool Ok, decimal? Valor, string? Erro) TetoDoTexto(string? texto)
+    {
+        if (string.IsNullOrWhiteSpace(texto)) return (true, null, null);
+        var v = Dinheiro.ReaisDoTexto(texto);
+        if (v is null || v <= 0) return (false, null, "o teto por MQL tem de ser um valor em reais maior que zero (ex.: 60). Nada foi salvo.");
+        return (true, Math.Round(v.Value, 2), null);
+    }
 
     static List<string> Lista(ChangeEventArgs e) => (e.Value?.ToString() ?? "").Split(',').Select(x => x.Trim()).Where(x => x != "").ToList();
     static List<string> Linhas(string t) => t.Split('\n').Select(x => x.Trim()).Where(x => x != "").ToList();
@@ -302,8 +335,6 @@ else
         erro = null; ocupado = true; salvo = false;
         try
         {
-            var v = Dinheiro.ReaisDoTexto(valorContrato);
-            if (Cliente.Ficha.Modalidade == "tcv") { Cliente.Ficha.ValorTotal = v; Cliente.Ficha.Mrr = null; } else { Cliente.Ficha.Mrr = v; Cliente.Ficha.ValorTotal = null; }
             Cliente.Icp.DoresPrincipais = Linhas(dores);
             Cliente.Icp.DesejosPrincipais = Linhas(desejos);
             Cliente.Icp.CanaisOndeEstao = Linhas(canais);
@@ -329,11 +360,14 @@ else
 
     async Task SalvarMql()
     {
-        erro = null; ocupado = true;
+        erro = null; ocupado = true; salvoMql = false;
         try
         {
+            var t = TetoDoTexto(teto);
+            if (!t.Ok) { erro = t.Erro; return; }
             var regua = new ReguaV2 { Perguntas = rascunho.Where(p => !string.IsNullOrWhiteSpace(p.Nome)).Select(p => p.Clonar()).ToList() };
-            await Api.SalvarCriterioMqlAsync(Cliente, regua.Perguntas.Count == 0 ? null : regua, Dinheiro.ReaisDoTexto(teto));
+            await Api.SalvarCriterioMqlAsync(Cliente, regua.Perguntas.Count == 0 ? null : regua, t.Valor);
+            salvoMql = true;
         }
         catch (Exception ex) { erro = ex.Message; }
         finally { ocupado = false; }

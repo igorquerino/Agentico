@@ -40,6 +40,20 @@ public static class Diagnostico
     public const int DiasParaFrio = 3;
     /// <summary>"Budget acabando": a verba do mês termina dentro de tantos dias, com o mês ainda pela frente.</summary>
     public const int DiasDeFolgaDoBudget = 3;
+    /// <summary>Gravidade 4: "travado" só depois de tantos dias corridos fora da automação (EXPERIENCE.md, pergunta 5).</summary>
+    public const int DiasParaTravado = 3;
+
+    /// <summary>A assinatura do conjunto de alertas (o que o visto guarda): muda quando qualquer causa entra, sai ou muda.</summary>
+    public static string AssinaturaDoConjunto(IEnumerable<Alerta> alertas) =>
+        string.Join("+", alertas.Select(a => a.Assinatura).Order(StringComparer.Ordinal));
+
+    /// <summary>Hash curto e ESTÁVEL entre processos (o string.GetHashCode muda a cada execução): 10 hex do SHA-1.</summary>
+    public static string HashCurto(string texto) =>
+        Convert.ToHexString(System.Security.Cryptography.SHA1.HashData(System.Text.Encoding.UTF8.GetBytes(texto)))[..10].ToLowerInvariant();
+
+    /// <summary>KPIs de outro mês (carga velha) não valem para o mês corrente. Mês vazio = a fonte não disse; vale.</summary>
+    public static bool DoMesCorrente(KpisDoMes k, DateTime agora) =>
+        string.IsNullOrWhiteSpace(k.Mes) || k.Mes.StartsWith(agora.ToString("yyyy-MM", System.Globalization.CultureInfo.InvariantCulture), StringComparison.Ordinal);
 
     public static List<Alerta> DoCliente(Cliente c, ParametrosMotor p, DateTime agora)
     {
@@ -60,7 +74,7 @@ public static class Diagnostico
                 if (desde is { } d0) tl.Add(new(d0, $"carga diária: a Meta recusou o token do squad{(c.Conta.TokenMotivo is null ? "" : $" ({c.Conta.TokenMotivo})")}"));
                 if (s.ConjuntosAtivos > 0) tl.Add(new(desde?.AddMinutes(1) ?? agora, $"o agente não rodou; {s.ConjuntosAtivos} conjunto(s) seguem ativos sem leitura"));
                 if (desde is { } d1 && agora.Date > d1.Date) tl.Add(new(agora, "carga de hoje: mesmo erro, o token continua vencido", Hoje: true));
-                lista.Add(new(Gravidade.AutomacaoParou, "A automação parou", $"parou {Relativo(desde, agora)} · token vencido",
+                lista.Add(new(Gravidade.AutomacaoParou, "A automação parou", $"{Com("parou", Relativo(desde, agora))} · token vencido",
                     $"{Quando(desde, agora)}. Nenhuma decisão do agente desde então{(s.ConjuntosAtivos > 0 ? $"; {s.ConjuntosAtivos} conjunto(s) seguem ativos sem leitura" : "")}.",
                     s.VerbaDiariaCentavos > 0 ? $"{Dinheiro.ReaisRedondos(s.VerbaDiariaCentavos)}/dia rodando sem o agente olhar" : "a conta roda sem o agente olhar",
                     s.VerbaDiariaCentavos > 0 ? "verba diária somada dos conjuntos ativos" : null,
@@ -70,7 +84,7 @@ public static class Diagnostico
             if (s.AutomacaoEstado is "pausada" or "cancelada")
             {
                 var desde = s.AutomacaoDesde;
-                lista.Add(new(Gravidade.AutomacaoParou, $"A automação está {s.AutomacaoEstado}", $"{s.AutomacaoEstado} {Relativo(desde, agora)}",
+                lista.Add(new(Gravidade.AutomacaoParou, $"A automação está {s.AutomacaoEstado}", Com(s.AutomacaoEstado, Relativo(desde, agora)),
                     $"{Quando(desde, agora)}{(s.AutomacaoMotivo is null ? "" : $": {s.AutomacaoMotivo}")}. O agente não decide nada enquanto estiver assim.",
                     s.VerbaDiariaCentavos > 0 ? $"{Dinheiro.ReaisRedondos(s.VerbaDiariaCentavos)}/dia rodando sem o agente olhar" : null, null,
                     "religar a automação do cliente na aba Automação", "head pra cima",
@@ -87,7 +101,7 @@ public static class Diagnostico
         }
 
         /* ---- 2 · dinheiro ------------------------------------------------------- */
-        if (emAutomacao && s.Kpis is { } k)
+        if (emAutomacao && s.Kpis is { } k && DoMesCorrente(k, agora))
         {
             if (k.CustoPorMqlCentavos is { } cpm && k.TetoCentavos is { } teto && teto > 0 && cpm > teto)
             {
@@ -108,23 +122,26 @@ public static class Diagnostico
                         aviso.Texto, $"{Dinheiro.ReaisRedondos(k.GastoSemMqlCentavos)} em anúncio sem nenhum MQL", null,
                         "pausar os conjuntos que não dão MQL (o agente recomenda)", "você (negar) · head (aceitar)",
                         [new(agora, aviso.Texto, Hoje: true)], null, Estagio.Automacao, $"budget-sem-mql:{k.Mes}:{k.GastoSemMqlCentavos * 10 / budget}"));
+                /* a projeção é sobre os dias LIDOS (a carga das 07:30 lê até ontem), não sobre o dia do calendário */
                 var diasDoMes = DateTime.DaysInMonth(agora.Year, agora.Month);
                 var diaDoMes = agora.Day;
-                var ritmo = diaDoMes > 0 ? (double)k.GastoCentavos / diaDoMes : 0;
+                var diasLidos = k.DiasLidos > 0 ? k.DiasLidos : Math.Max(1, diaDoMes - 1);
+                var decorridos = Math.Min(diasDoMes, Math.Max(diasLidos, diaDoMes - 1));
+                var faltam = diasDoMes - decorridos;
+                var ritmo = (double)k.GastoCentavos / diasLidos;
                 if (ritmo > 0 && k.GastoCentavos < budget)
                 {
                     var diasAteAcabar = (int)Math.Floor((budget - k.GastoCentavos) / ritmo);
-                    var faltam = diasDoMes - diaDoMes;
                     /* iminente: acaba nos próximos dias e o mês ainda tem chão pela frente */
                     if (diasAteAcabar <= DiasDeFolgaDoBudget && faltam > diasAteAcabar + 2)
                         lista.Add(new(Gravidade.Dinheiro, "O budget do mês acaba antes do mês", $"{Pct(k.GastoCentavos, budget)} do budget · acaba em {diasAteAcabar} dia(s)",
-                            $"{Pct(k.GastoCentavos, budget)} do budget gasto no dia {diaDoMes} de {diasDoMes}; neste ritmo a verba acaba em {diasAteAcabar} dia(s) e faltam {faltam}.",
+                            $"{Pct(k.GastoCentavos, budget)} do budget gasto em {diasLidos} dia(s) lido(s) de {diasDoMes}; neste ritmo a verba acaba em {diasAteAcabar} dia(s) e faltam {faltam}.",
                             $"{Dinheiro.ReaisRedondos(budget - k.GastoCentavos)} para {faltam} dias", null,
                             "baixar a verba diária dos conjuntos ou combinar reforço com o cliente", "head pra cima (verba) · você (cliente)",
                             [new(agora, $"gasto {Dinheiro.ReaisRedondos(k.GastoCentavos)} de {Dinheiro.ReaisRedondos(budget)}", Hoje: true)],
                             null, Estagio.Automacao, $"budget-acaba:{k.Mes}:{diasAteAcabar}"));
                 }
-                else if (k.GastoCentavos >= budget && diaDoMes < diasDoMes - 1)
+                else if (k.GastoCentavos >= budget && faltam > 2)
                     lista.Add(new(Gravidade.Dinheiro, "O budget do mês acabou", "100% do budget gasto",
                         $"A verba do mês ({Dinheiro.ReaisRedondos(budget)}) acabou no dia {diaDoMes} de {diasDoMes}.", null, null,
                         "combinar reforço com o cliente ou pausar até o mês virar", "você", [new(agora, "budget do mês esgotado", Hoje: true)],
@@ -139,29 +156,33 @@ public static class Diagnostico
             var partes = new List<string>();
             if (s.DiasSemMensagem is { } dsm && dsm >= DiasParaFrio) partes.Add($"{dsm} dias sem resposta no grupo");
             if (s.PromessaAtrasada is not null) partes.Add($"promessa atrasada: {s.PromessaAtrasada}");
-            if (s.TendenciaD7 is { } t && t < 0) partes.Add($"nota {s.NotaCs + Math.Abs(t)} → {s.NotaCs} em 7 d");
+            if (s.TendenciaD7 is { } t && t < 0 && s.NotaCs is { } notaHoje) partes.Add($"nota {notaHoje + Math.Abs(t)} → {notaHoje} em 7 d");
             var motivo = partes.Count > 0 ? string.Join(", ", partes) : sinais ?? "o Agente de CS marcou o risco";
-            lista.Add(new(Gravidade.Churn, $"Risco de churn {s.RiscoChurn}", $"churn {s.RiscoChurn} · {(partes.Count > 0 ? partes[0] : $"nota {s.NotaCs}")}",
-                $"Nota do CS {s.NotaCs?.ToString() ?? "sem nota"} ({s.FaixaCs}). {Primeira(motivo)}.", null, null,
+            var curtoChurn = partes.Count > 0 ? partes[0] : s.NotaCs is { } n ? $"nota {n}" : null;
+            lista.Add(new(Gravidade.Churn, $"Risco de churn {s.RiscoChurn}", $"churn {s.RiscoChurn}{(curtoChurn is null ? "" : $" · {curtoChurn}")}",
+                $"{(s.NotaCs is { } nota ? $"Nota do CS {nota} ({s.FaixaCs.Replace('_', ' ')})" : "Sem nota do CS")}. {Primeira(motivo)}.", null, null,
                 "falar com o cliente hoje e fechar o próximo passo que o CS deixou", "você",
-                [new(agora, motivo, Hoje: true)], null, Estagio.Chegada, $"churn:{s.RiscoChurn}:{s.NotaCs}"));
+                [new(agora, motivo, Hoje: true)], null, estagio, $"churn:{s.RiscoChurn}:{s.NotaCs}"));
         }
 
         /* ---- 4 · travado numa etapa --------------------------------------------- */
-        if (!emAutomacao && estagio < Estagio.Automacao && !c.Automacao.EmCurso)
+        /* Só a partir de DiasParaTravado dias corridos. Sem a data (o V1 não manda `desde` na listagem, e o
+           padrão 01/01/0001 viraria "há 739000 d"), o dia é desconhecido: dispara sem contagem no texto. */
+        DateTime? desdeTravado = c.Desde == default ? null : c.Desde.ToDateTime(TimeOnly.MinValue);
+        int? diasTravado = desdeTravado is { } dt0 ? Math.Max(0, (agora.Date - dt0.Date).Days) : null;
+        if (!emAutomacao && estagio < Estagio.Automacao && !c.Automacao.EmCurso && (diasTravado is null || diasTravado >= DiasParaTravado))
         {
             var pend = Estagios.PendenciasDoEstagio(c, p);
-            var desde = c.Desde.ToDateTime(TimeOnly.MinValue);
-            var dias = Math.Max(0, (agora.Date - desde.Date).Days);
             var nome = Estagios.Descricao(estagio).Curto;
             var falta = pend.Count == 0 ? "" : $"falta {string.Join(", ", pend.Take(2))}{(pend.Count > 2 ? $" e mais {pend.Count - 2}" : "")}";
-            var curto = estagio == Estagio.Chegada || estagio == Estagio.Assets
-                ? $"chegou há {dias} d · {falta}"
-                : $"{nome} há {dias} d · {falta}";
+            var onde = diasTravado is { } d
+                ? (estagio == Estagio.Chegada || estagio == Estagio.Assets ? $"chegou há {d} d" : $"{nome} há {d} d")
+                : $"em {nome}";
+            var curto = falta == "" ? onde : $"{onde} · {falta}";
             lista.Add(new(Gravidade.Travado, $"Travado em {nome}", curto,
-                $"Está em {nome} há {dias} dia(s). {(pend.Count > 0 ? "Falta " + string.Join(", ", pend) + "." : "")}",
+                $"{(diasTravado is { } d2 ? $"Está em {nome} há {d2} dia(s)." : $"Está em {nome} (sem data de entrada).")}{(pend.Count > 0 ? " Falta " + string.Join(", ", pend) + "." : "")}",
                 null, null, c.Automacao.PrecisaDeVoce ?? "resolver a pendência e dar Start (o condutor faz o resto)", "você",
-                [new(desde, $"entrou em {nome}")], desde, estagio, $"travado:{estagio}:{string.Join("|", pend)}"));
+                desdeTravado is { } d3 ? [new(d3, $"entrou em {nome}")] : [], desdeTravado, estagio, $"travado:{estagio}:{string.Join("|", pend)}"));
         }
 
         /* ---- 5 · pedido do cliente ----------------------------------------------- */
@@ -170,7 +191,7 @@ public static class Diagnostico
             lista.Add(new(Gravidade.Pedido, "O cliente pediu", $"pediu pelo {(s.PedidoOrigem == "portal" ? "portal" : "CS")}: {Aspas(s.PedidoDoCliente, 42)}",
                 $"Pelo {(s.PedidoOrigem == "portal" ? "portal do cliente" : "Agente de CS")}{(s.PedidoEm is { } pe ? $", {Quando(pe, agora)}" : "")}: \"{s.PedidoDoCliente}\".",
                 null, null, "responder o cliente e, se for demanda, virar task", "você",
-                [new(s.PedidoEm ?? agora, s.PedidoDoCliente)], s.PedidoEm, Estagio.Chegada, $"pedido:{s.PedidoEm:yyyyMMddHHmm}:{s.PedidoDoCliente.GetHashCode()}"));
+                [new(s.PedidoEm ?? agora, s.PedidoDoCliente)], s.PedidoEm, estagio, $"pedido:{s.PedidoEm:yyyyMMddHHmm}:{HashCurto(s.PedidoDoCliente)}"));
         }
 
         /* ---- 6 · cliente frio ---------------------------------------------------- */
@@ -179,7 +200,7 @@ public static class Diagnostico
             lista.Add(new(Gravidade.Frio, "Grupo frio", $"frio {frio} d",
                 $"{frio} dias corridos sem mensagem no grupo do cliente.", null, null,
                 "mandar uma mensagem com o que aconteceu na conta esta semana", "você",
-                [new(agora.AddDays(-frio), "última mensagem no grupo")], agora.AddDays(-frio), Estagio.Chegada, $"frio:{frio / 2}"));
+                [new(agora.AddDays(-frio), "última mensagem no grupo")], agora.AddDays(-frio), estagio, $"frio:{frio / 2}"));
         }
 
         return lista.OrderBy(a => a.Gravidade).ToList();
@@ -209,5 +230,7 @@ public static class Diagnostico
     }
 
     static string Primeira(string s) => s.Length == 0 ? s : char.ToUpperInvariant(s[0]) + s[1..];
+    /// <summary>"parou ontem 07:30", ou só "parou" quando não há quando: nada de espaço sobrando no texto.</summary>
+    static string Com(string? a, string? b) => string.IsNullOrEmpty(b) ? a ?? "" : $"{a} {b}";
     static string Aspas(string s, int max) => s.Length <= max ? $"\"{s}\"" : $"\"{s[..max].TrimEnd()}…\"";
 }

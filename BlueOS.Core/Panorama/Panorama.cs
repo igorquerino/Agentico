@@ -25,12 +25,15 @@ public sealed record Estrela(
     [System.Text.Json.Serialization.JsonIgnore] public bool EstaVista => Visto is not null;
     [System.Text.Json.Serialization.JsonIgnore] public string Slug => Cliente.Slug;
     [System.Text.Json.Serialization.JsonIgnore] public string Nome => Cliente.Nome;
+    /// <summary>O que o visto guarda: o conjunto INTEIRO de alertas do cliente. Uma causa nova (outro g1, outro motivo) muda a assinatura e derruba o visto.</summary>
+    [System.Text.Json.Serialization.JsonIgnore] public string AssinaturaDoVisto => Diagnostico.AssinaturaDoConjunto(Alertas);
 }
 
 /// <summary>Marcar como visto: silencia o alerta até amanhã (00:00 em Brasília) ou até a assinatura do estado mudar.</summary>
 public sealed record Visto(string ClienteSlug, string Assinatura, DateTime Em, string Por)
 {
-    public bool ValeAgora(DateTime agora, string assinaturaAtual) => assinaturaAtual == Assinatura && agora.Date == Em.Date;
+    public bool ValeAgora(DateTime agora, string assinaturaAtual) =>
+        assinaturaAtual == Assinatura && Relogio.DiaEmBrasilia(agora) == Relogio.DiaEmBrasilia(Em);
 }
 
 public sealed record ResumoDoSquad(
@@ -38,12 +41,12 @@ public sealed record ResumoDoSquad(
     long GastoCentavos, long BudgetCentavos, int Mql, int MetaMql, long? CustoMedioPorMqlCentavos, long? TetoMedioCentavos,
     int DiaDoMes, int DiasDoMes)
 {
-    /// <summary>Saúde do squad = saudáveis ÷ total, em %.</summary>
-    [System.Text.Json.Serialization.JsonIgnore] public int SaudePct => Clientes == 0 ? 100 : (int)Math.Round(EmDia * 100.0 / Clientes);
+    /// <summary>Saúde do squad = saudáveis ÷ total, em %. Squad vazio não tem saúde (a tela mostra "—").</summary>
+    [System.Text.Json.Serialization.JsonIgnore] public int? SaudePct => Clientes == 0 ? null : (int)Math.Round(EmDia * 100.0 / Clientes);
 }
 
-/// <summary>"Meta (gasto, leads) · lida há 4 min". Ruim quando a leitura passou do prazo ou a fonte recusou.</summary>
-public sealed record SinalDeVida(string Fonte, string Texto, bool Ruim);
+/// <summary>"Meta (gasto, leads) · lida há 4 min". Ruim quando a leitura passou do prazo ou a fonte recusou; não vigiado quando a fonte não traz dado.</summary>
+public sealed record SinalDeVida(string Fonte, string Texto, bool Ruim, bool Vigiado = true);
 
 public sealed record LinhaDoRanking(string Nome, int Valor, bool EhVoce, string? Extra = null);
 public sealed record Acendeu(DateTime Quando, string Cliente, int Pontos, string Por);
@@ -62,10 +65,13 @@ public sealed record PanoramaDoSquad(
     DateTime Agora, string Squad, IReadOnlyList<string> Squads, ResumoDoSquad Resumo,
     IReadOnlyList<Estrela> Estrelas, IReadOnlyList<SinalDeVida> SinaisDeVida, Placar Placar)
 {
-    [System.Text.Json.Serialization.JsonIgnore] public IEnumerable<Estrela> PrecisamDeVoce => Estrelas.Where(e => !e.Saudavel).OrderBy(e => e.Principal!.Gravidade).ThenBy(e => e.Nome);
+    /// <summary>"Precisam de você" = tem gravidade e não está visto (EXPERIENCE.md, severity model).</summary>
+    [System.Text.Json.Serialization.JsonIgnore] public IEnumerable<Estrela> PrecisamDeVoce => Estrelas.Where(e => !e.Saudavel && !e.EstaVista).OrderBy(e => e.Principal!.Gravidade).ThenBy(e => e.Nome);
     [System.Text.Json.Serialization.JsonIgnore] public IEnumerable<Estrela> Saudaveis => Estrelas.Where(e => e.Saudavel).OrderBy(e => e.Nome);
-    /// <summary>O que interrompe: gravidade 1 ainda não vista.</summary>
-    [System.Text.Json.Serialization.JsonIgnore] public IEnumerable<Estrela> Interrompem => Estrelas.Where(e => e.Principal is { } a && Gravidades.Interrompe(a.Gravidade) && !e.EstaVista);
+    /// <summary>O que interrompe: gravidade 1 ainda não vista, o mais antigo primeiro (é ele que a faixa mostra).</summary>
+    [System.Text.Json.Serialization.JsonIgnore] public IEnumerable<Estrela> Interrompem => Estrelas
+        .Where(e => e.Principal is { } a && Gravidades.Interrompe(a.Gravidade) && !e.EstaVista)
+        .OrderBy(e => e.Principal!.Desde ?? DateTime.MaxValue).ThenBy(e => e.Nome);
 }
 
 public static class Montador
@@ -82,14 +88,18 @@ public static class Montador
         _ => "",
     };
 
+    /// <summary>Cliente em churn sai do mapa: não vira estrela, não conta em "precisam de você" nem na saúde do squad.</summary>
+    public static bool ForaDoMapa(Cliente c) => string.Equals(c.Status, "churn", StringComparison.OrdinalIgnoreCase);
+
     /// <summary>Monta o Panorama de um squad a partir da carteira já lida. `vistos` são os vistos vigentes de quem olha.</summary>
     public static PanoramaDoSquad Montar(
         IReadOnlyList<Cliente> carteira, string? squad, ParametrosMotor p, DateTime agora,
         IReadOnlyList<Visto> vistos, IReadOnlyList<SinalDeVida> sinaisDeVida, Placar placar)
     {
-        var squads = carteira.SelectMany(c => c.Squads.Count > 0 ? c.Squads : [c.Squad]).Select(s => s.ToUpperInvariant()).Distinct().OrderBy(s => s).ToList();
+        var ativos = carteira.Where(c => !ForaDoMapa(c)).ToList();
+        var squads = ativos.SelectMany(c => c.Squads.Count > 0 ? c.Squads : [c.Squad]).Select(s => s.ToUpperInvariant()).Distinct().OrderBy(s => s).ToList();
         var escolhido = squad is not null && squads.Contains(squad.ToUpperInvariant()) ? squad.ToUpperInvariant() : squads.FirstOrDefault() ?? (squad ?? "");
-        var doSquad = carteira.Where(c => escolhido == "" || c.EstaNoSquad(escolhido)).ToList();
+        var doSquad = ativos.Where(c => escolhido == "" || c.EstaNoSquad(escolhido)).ToList();
 
         var brutas = doSquad.Select(c =>
         {
@@ -98,7 +108,9 @@ public static class Montador
             Visto? visto = null;
             if (principal is not null)
             {
-                visto = vistos.FirstOrDefault(v => v.ClienteSlug == c.Slug && v.ValeAgora(agora, principal.Assinatura));
+                /* o visto casa com o conjunto inteiro: uma causa nova (outro g1 atrás do principal) derruba o visto */
+                var assinatura = Diagnostico.AssinaturaDoConjunto(alertas);
+                visto = vistos.FirstOrDefault(v => v.ClienteSlug == c.Slug && v.ValeAgora(agora, assinatura));
             }
             var pend = c.Recomendacoes.Count(r => r.Estado == EstadoDaRecomendacao.Pendente);
             return (c, estagio: Estagios.DoCliente(c, p), alertas, principal, visto, pend);
@@ -124,19 +136,21 @@ public static class Montador
             estrelas.Add(new(b.c, b.estagio, b.alertas, null, null, new(Orbita.AnelDosSaudaveis, Orbita.AnguloDaBorda(i, saudaveis.Count)), b.pend));
         }
 
-        var kpis = doSquad.Select(c => c.Sinais.Kpis).Where(k => k is not null).ToList();
-        var tetos = doSquad.Where(c => c.TetoMql is > 0).Select(c => Dinheiro.CentavosDe(c.TetoMql!.Value)).ToList();
-        var gasto = kpis.Sum(k => k!.GastoCentavos);
-        var mql = kpis.Sum(k => k!.Mql);
+        /* gasto, budget, MQL e teto somam a MESMA população: quem tem os KPIs do mês lidos */
+        var comKpis = doSquad.Where(c => c.Sinais.Kpis is not null).ToList();
+        var kpis = comKpis.Select(c => c.Sinais.Kpis!).ToList();
+        var tetos = comKpis.Where(c => c.TetoMql is > 0).Select(c => Dinheiro.CentavosDe(c.TetoMql!.Value)).ToList();
+        var gasto = kpis.Sum(k => k.GastoCentavos);
+        var mql = kpis.Sum(k => k.Mql);
         var resumo = new ResumoDoSquad(escolhido, doSquad.Count,
             estrelas.Count(e => Estagios.CampanhaPublicada(e.Cliente)),
-            estrelas.Count(e => !e.Saudavel), estrelas.Count(e => e.Saudavel),
-            gasto, doSquad.Where(c => c.BudgetMensal is > 0).Sum(c => Dinheiro.CentavosDe(c.BudgetMensal!.Value)),
-            mql, kpis.Sum(k => k!.MetaMql ?? 0),
+            estrelas.Count(e => !e.Saudavel && !e.EstaVista), estrelas.Count(e => e.Saudavel),
+            gasto, comKpis.Where(c => c.BudgetMensal is > 0).Sum(c => Dinheiro.CentavosDe(c.BudgetMensal!.Value)),
+            mql, kpis.Sum(k => k.MetaMql ?? 0),
             mql > 0 ? gasto / mql : null, tetos.Count > 0 ? (long)tetos.Average() : null,
             agora.Day, DateTime.DaysInMonth(agora.Year, agora.Month));
 
-        return new PanoramaDoSquad(agora, escolhido, squads, resumo, estrelas, sinaisDeVida, placar);
+        return new PanoramaDoSquad(agora, escolhido, squads, resumo, estrelas, Vida.Conferir(sinaisDeVida, doSquad), placar);
     }
 
     /// <summary>"lida há 4 min", "lido há 1 h", "ontem 07:30".</summary>

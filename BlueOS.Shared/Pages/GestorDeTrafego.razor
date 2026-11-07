@@ -66,7 +66,7 @@ else
     var principal = vs.Alertas.FirstOrDefault();
     var acaoDoCliente = AcoesDoCard.De(sel, vs.Estagio, principal, vs.Pendentes);
     <div class="ch">
-        <button type="button" class="btn-g sm" @onclick="Fechar">&larr; Carteira</button>
+        <button type="button" class="btn-g sm" @onclick="Fechar">&larr; @(veioDoPanorama ? "Panorama" : "Carteira")</button>
         <div class="aura pequena @(Estagios.CampanhaPublicada(sel) || sel.Automacao.EmCurso ? "on" : "") @(sel.Automacao.EmCurso ? "rapida" : "") @(principal?.Gravidade == Gravidade.AutomacaoParou ? "parou" : "")">
             <span class="clogo">
                 @if (sel.Assets.FirstOrDefault(x => x.Tipo == TipoDeAsset.LogoPrincipal && x.Url is not null) is { } logo) { <img src="@logo.Url" alt="" /> } else { <span>@Iniciais(sel.Nome)</span> }
@@ -177,6 +177,7 @@ else
 }
 
 @code {
+    [CascadingParameter] public Painel? Painel { get; set; }
     IBlueApi Api => Fonte.Atual;
     List<Cliente> clientes = new();
     Cliente? sel;
@@ -189,6 +190,8 @@ else
     string squadNovo = "POSEIDON";
     IBlueApi? apiVista;
     string? squadFiltro;
+    /// <summary>Chegou pelo "Abrir no Start" do Panorama: o "←" volta ao Panorama (EXPERIENCE.md, Information Architecture).</summary>
+    bool veioDoPanorama;
 
     /// <summary>O que a carteira sabe de cada cliente: estágio, alertas (as regras do Panorama) e decisões pendentes.</summary>
     sealed record Vista(Cliente Cliente, Estagio Estagio, List<Alerta> Alertas, int Pendentes, Trabalho Trabalho);
@@ -201,11 +204,12 @@ else
         return new(c, e, alertas, pend, AcoesDoCard.TrabalhoDe(c, e));
     }
 
-    static bool PrecisaDeAcao(Vista v) => v.Alertas.Count > 0 || v.Pendentes > 0 || v.Cliente.Automacao.EmCurso || v.Cliente.Automacao.Parou;
+    /* fora da automação sempre há o que começar ou terminar, mesmo antes dos 3 dias que fazem o Panorama chamar de "travado" */
+    static bool PrecisaDeAcao(Vista v) => v.Alertas.Count > 0 || v.Pendentes > 0 || v.Cliente.Automacao.EmCurso || v.Cliente.Automacao.Parou || (v.Estagio < Estagio.Automacao && !Estagios.CampanhaPublicada(v.Cliente));
 
     List<string> SquadsDaCarteira => clientes.SelectMany(c => c.Squads.Count > 0 ? c.Squads : [c.Squad]).Select(s => s.ToUpperInvariant()).Distinct().OrderBy(s => s).ToList();
     List<Cliente> DoSquad => squadFiltro is null ? clientes : clientes.Where(c => c.EstaNoSquad(squadFiltro)).ToList();
-    void EscolherSquad(string? s) { squadFiltro = s; Fonte.GravarSquadPadrao(s); }
+    void EscolherSquad(string? s) { squadFiltro = s; Fonte.GravarSquadPadrao(s); Painel?.PedirLeitura(); }
 
     /// <summary>Sem busca: só quem precisa de ação, por gravidade e nome. Com busca: a carteira inteira, inclusive os em dia.</summary>
     List<Vista> Filtrados
@@ -252,8 +256,10 @@ else
         var slug = q["cliente"];
         if (!string.IsNullOrWhiteSpace(slug) && clientes.FirstOrDefault(c => c.Slug == slug) is { } alvo)
         {
+            veioDoPanorama = q["de"] == "panorama";
             await Abrir(alvo);
-            if (Enum.TryParse<Estagio>(q["etapa"], ignoreCase: true, out var e)) aba = e;
+            /* TryParse aceita "9": só vale um estágio que existe (senão a descrição da etapa estoura o render) */
+            if (Enum.TryParse<Estagio>(q["etapa"], ignoreCase: true, out var e) && Enum.IsDefined(e)) aba = e;
         }
     }
 
@@ -293,14 +299,20 @@ else
         aba = pedido.Etapa;
     }
 
-    void Fechar() { sel = null; erro = null; painelStart = false; }
+    void Fechar()
+    {
+        sel = null; erro = null; painelStart = false;
+        if (veioDoPanorama) { veioDoPanorama = false; Nav.NavigateTo(""); }
+    }
 
     /* O Start automático: o condutor roda em segundo plano e avisa a cada passo; a trilha acende etapa por etapa. */
     Task IniciarStart(PedidoDeStart pedido)
     {
         erro = null;
-        var condutor = new Condutor(Api);
-        _ = condutor.ConduzirAsync(pedido.Cliente, pedido.Plano, atual => InvokeAsync(() => { Trocar(atual); StateHasChanged(); }));
+        var api = Api;
+        var condutor = new Condutor(api);
+        /* trocou a fonte no meio do Start: o resultado da fonte antiga não entra na carteira nova */
+        _ = condutor.ConduzirAsync(pedido.Cliente, pedido.Plano, atual => InvokeAsync(() => { if (!ReferenceEquals(api, Api)) return; Trocar(atual); StateHasChanged(); }));
         return Task.CompletedTask;
     }
 

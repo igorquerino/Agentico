@@ -16,9 +16,19 @@ public sealed class Painel
     public string Busca { get; set; } = "";
     /// <summary>O slug da estrela aberta (popover) — null = nenhuma.</summary>
     public string? Foco { get; set; }
+    /// <summary>O erro da conexão automática (o layout tenta antes de qualquer tela): fica visível até a pessoa fechar.</summary>
+    public string? AvisoDaConexao { get; private set; }
     public event Action? Mudou;
+    /// <summary>Alguém mudou o que a leitura depende (o squad escolhido no Start): o layout relê na hora, sem esperar o minuto.</summary>
+    public event Action? Reler;
 
     public void Avisar() => Mudou?.Invoke();
+
+    public void PedirLeitura() => Reler?.Invoke();
+
+    public void AvisarConexao(string aviso) { AvisoDaConexao = aviso; Avisar(); }
+
+    public void DispensarAvisoDaConexao() { AvisoDaConexao = null; Avisar(); }
 
     public void ComecouALer() { Lendo = true; Avisar(); }
 
