@@ -20,7 +20,9 @@ public sealed partial class DemoApi : IBlueApi
     readonly List<Cliente> _clientes = new();
     bool _chaveGeral = true;
     string? _motivoDaChave;
-    static readonly Random Rnd = new(29);
+    /* Por instância, não estático: os ids dos conjuntos (e as sementes dos leads, que derivam deles) ficam os mesmos
+       em qualquer ordem de criação das demonstrações, inclusive com os testes em paralelo. */
+    readonly Random Rnd = new(29);
 
     public string Origem => "Demonstração (dados em memória, Meta simulada)";
     public bool EhDemo => true;
@@ -33,7 +35,7 @@ public sealed partial class DemoApi : IBlueApi
 
     static Task<T> De<T>(T v) => Task.FromResult(v);
     static string NovoId() => Guid.NewGuid().ToString("n");
-    static string IdDaMeta() => "120" + Rnd.NextInt64(100_000_000_000L, 999_999_999_999L).ToString();
+    string IdDaMeta() => "120" + Rnd.NextInt64(100_000_000_000L, 999_999_999_999L).ToString();
     static DateOnly Hoje => DateOnly.FromDateTime(DateTime.Now);
 
     /* ---- clientes ------------------------------------------------------------ */
