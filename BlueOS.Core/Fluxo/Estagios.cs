@@ -57,7 +57,7 @@ public static class Estagios
     public static IReadOnlyList<Etapa> EtapasExigidas(Cliente c, ParametrosMotor p)
     {
         if (c.BudgetMensal is null or <= 0) return [Etapa.MOFU];
-        return Faixa.EtapasDaFaixa(Faixa.DoBudget(Dinheiro.CentavosDe(c.BudgetMensal.Value), p.Faixas));
+        return Faixa.EtapasDaFaixa(Dinheiro.CentavosDe(c.BudgetMensal.Value), c.Conta.TemLista, c.Conta.TemSiteOuTag, p);
     }
 
     public static (bool Ok, List<string> Pendencias) CopyPronta(Cliente c, ParametrosMotor p)

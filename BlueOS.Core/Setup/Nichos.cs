@@ -49,13 +49,24 @@ public static class Nichos
         ("servicos-profissionais", ["consultor", "servico", "assessor", "terceiriz"]),
     ];
 
+    /// <summary>A marca casa no INÍCIO de uma palavra ("curso" não casa "recursos humanos", "obra" não casa "sobrancelha");
+    /// a marca que termina em espaço (" rh ", "app ") casa também o fim da palavra.</summary>
     public static string Sugerir(string? texto)
     {
-        var t = " " + Motor.Regua.Normalizar(texto) + " ";
+        var t = " " + Palavras(texto) + " ";
         if (t.Trim().Length == 0) return "outro";
         foreach (var (slug, marcas) in Pistas)
-            if (marcas.Any(m => t.Contains(Motor.Regua.Normalizar(m).Length == 0 ? m : (m.StartsWith(' ') || m.EndsWith(' ') ? m : Motor.Regua.Normalizar(m))))) return slug;
+            if (marcas.Any(m => Palavras(m) is { Length: > 0 } pm && t.Contains(" " + pm + (m.EndsWith(' ') ? " " : "")))) return slug;
         return "outro";
+    }
+
+    /// <summary>Sem acento e sem caixa, com tudo que não é letra nem número virando um espaço só.</summary>
+    static string Palavras(string? s)
+    {
+        var n = Motor.Regua.Normalizar(s);
+        var sb = new System.Text.StringBuilder(n.Length);
+        foreach (var ch in n) sb.Append(char.IsLetterOrDigit(ch) ? ch : ' ');
+        return string.Join(' ', sb.ToString().Split(' ', StringSplitOptions.RemoveEmptyEntries));
     }
 
     static readonly Dictionary<string, string> Acento = new()

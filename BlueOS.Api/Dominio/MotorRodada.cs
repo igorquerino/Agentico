@@ -9,76 +9,104 @@ namespace BlueOS.Api.Dominio;
    passada de decisão sobre a carga que já está no banco; a carga da Meta é o
    cron das 07:30 UTC, não esta rota).
    ----------------------------------------------------------------------------
-   Para cada conjunto com entrega, a árvore (Core/Motor/Arvore) decide; a ação
-   que pede gente (PAUSAR, DUPLICAR, ALERTAR, TROCAR_CRIATIVO) vira uma linha em
-   `trafego_motor_recomendacao`, salvo quando já há a mesma recomendação
-   pendente para o conjunto (repetida). O texto é a trilha da árvore (a leitura
-   pelo modelo via OpenRouter, do V1, fica de fora: `texto_fonte = trilha`).
+   A entrada de cada conjunto é a do V1 (conjuntos.ts + memoria.ts), lida por
+   Automacao.OngoingAsync e montada em Core/Motor/Carga: a leitura do dia pela
+   marca da carga, a foto de 36 h (status, verba e formato), a cobertura, os
+   anúncios do último dia, a janela de 30 dias igual para gasto e leads, a
+   campanha matriculada e a memória do motor (última ação, D5, cópias vivas).
+   A reconferência do aceite (Executor) lê a MESMA entrada.
+   Para cada conjunto com entrega a árvore decide; a ação que pede gente
+   (PAUSAR, ALERTAR, DUPLICAR, TROCAR_CRIATIVO) vira linha em
+   `trafego_motor_recomendacao` se couber na cadência (cabeNaCadencia) e se não
+   houver a mesma (conjunto, ação) pendente.
+   O QUE DIVERGE DO V1, de propósito: o texto é a trilha (a leitura pelo modelo
+   via OpenRouter fica de fora: `texto_fonte = trilha`); os parâmetros são os
+   do vault 9715c94 em código (ParametrosMotor.PadraoDoVault), e o `vault_sha`
+   gravado é o DELES; `regras_usadas` guarda as chaves (o snapshot do vault
+   não é lido aqui).
    Esta rota NÃO escreve na Meta: aplicar é o aceite do gestor (Executor).
    ============================================================================ */
-public sealed class MotorRodada(Db db, Automacao automacao, CopyAgente copy, Registro registro, ILogger<MotorRodada> log)
+public sealed class MotorRodada(Db db, Automacao automacao, Registro registro, ILogger<MotorRodada> log)
 {
     public async Task<(int Status, object Corpo)> RodarAsync(Cliente c, Guid por)
     {
         var inicio = DateTime.UtcNow;
+        var p = ParametrosMotor.PadraoDoVault;
+        /* o sha dos parâmetros que DECIDEM, não o vivo do vault: a auditoria diz de qual metodologia a recomendação saiu */
+        var vaultSha = p.VaultSha;
+        int Duracao() => (int)(DateTime.UtcNow - inicio).TotalMilliseconds;
+
         var aut = await db.UmAsync(Sql.Fmt($"select motor_automacao, motor_automacao_motivo from public.trafego_contas where cliente_slug = {c.Slug}"), r => new { Estado = r.S("motor_automacao"), Motivo = r.S("motor_automacao_motivo") });
         if (aut?.Estado is "pausada" or "cancelada")
-            return (409, new { error = $"a automação deste cliente está {aut.Estado}{(aut.Motivo is not null ? $" ({aut.Motivo})" : "")}: o motor não lê nem age nele.", automacao = aut });
-
-        var vaultSha = (await copy.VaultAsync())?.Sha ?? ParametrosMotor.PadraoDoVault.VaultSha;
-        var naoAgiu = new List<string>(); var avaliados = new List<object>(); var gravadas = 0; var repetidas = 0;
-        if (c.Regua is null || c.TetoMql is null or <= 0)
         {
-            naoAgiu.Add("sem_regua_ou_teto");
+            var erro = $"a automação deste cliente está {aut.Estado}{(aut.Motivo is not null ? $" ({aut.Motivo})" : "")}: o motor não lê nem age nele.";
+            await registro.TrilhaAsync("rodou_motor", por, c.Slug, "negado", erro, "motor", null, new { via = "api", nao_agiu = new[] { $"automacao_{aut.Estado}" }, vault = Curto(vaultSha) }, duracaoMs: Duracao());
+            return (409, new { error = erro, automacao = aut });
+        }
+
+        var naoAgiu = new List<string>(); var avaliados = new List<object>(); var falharam = new List<string>();
+        int gravadas = 0, repetidas = 0, foraDaCadencia = 0;
+        async Task<(int, object)> SemAgir(string motivo)
+        {
+            naoAgiu.Add(motivo);
+            await registro.TrilhaAsync("rodou_motor", por, c.Slug, "ok", null, "motor", null, new { via = "api", gravadas, repetidas, avaliados = 0, nao_agiu = naoAgiu, vault = Curto(vaultSha) }, duracaoMs: Duracao());
             return (200, new { gravadas, repetidas, nao_agiu = naoAgiu, vault_sha = vaultSha, avaliados, recomendacoes = Array.Empty<object>() });
         }
+
+        /* o teto que serve é o que dá pelo menos 1 centavo: R$ 0,004 não é teto */
+        var teto = Dinheiro.TetoEmCentavos(c.TetoMql);
+        if (c.Regua is null || teto is null) return await SemAgir("sem_regua_ou_teto");
         var ongoing = await automacao.OngoingAsync(c);
         var comEntrega = ongoing.Conjuntos.Where(cj => cj.DiasEntrega > 0).ToList();
-        if (comEntrega.Count == 0)
-        {
-            naoAgiu.Add("sem_conjunto_com_entrega");
-            return (200, new { gravadas, repetidas, nao_agiu = naoAgiu, vault_sha = vaultSha, avaliados, recomendacoes = Array.Empty<object>() });
-        }
-        var teto = Dinheiro.CentavosDe(c.TetoMql.Value);
-        var clienteConverte = ongoing.Conjuntos.Any(cj => cj.Leads.Any(l => l.Situacao == Situacao.Mql));
-        var pendentes = (await automacao.RecomendacoesAsync(c.Slug)).Where(r => r.Estado == EstadoDaRecomendacao.Pendente).ToList();
-        var formatos = (await db.ListaAsync(Sql.Fmt($"select adset_id, formato from public.trafego_adset_estado where cliente_slug = {c.Slug}"), r => (Id: r.S("adset_id") ?? "", Formato: r.S("formato")))).ToDictionary(x => x.Id, x => x.Formato);
+        if (comEntrega.Count == 0) return await SemAgir("sem_conjunto_com_entrega");
+
+        /* "o cliente converte?" é sobre a conta (a campanha matriculada), nos conjuntos que o motor lê */
+        var clienteConverte = comEntrega.Any(cj => cj.Leads.Any(l => l.Situacao == Situacao.Mql));
+        var pendentes = await automacao.PendentesAsync(c.Slug);
 
         foreach (var cj in comEntrega)
         {
-            var entrada = Executor.EntradaDe(cj, c.Slug, formatos.GetValueOrDefault(cj.AdsetId));
-            var d = Arvore.Decidir(entrada, new EntradaAoVivo(cj.Ativo, cj.DiarioCentavos), teto, clienteConverte, ParametrosMotor.PadraoDoVault);
-            avaliados.Add(new { adset_id = cj.AdsetId, nome = cj.Nome, acao = d.Acao.ToString(), chaves = d.Chaves, segurou_por_pendentes = d.SegurouPorPendentes });
-            if (d.Acao is not (Acao.PAUSAR or Acao.ALERTAR or Acao.DUPLICAR or Acao.TROCAR_CRIATIVO)) continue;
-            if (pendentes.Any(r => r.MetaId == cj.AdsetId && r.Acao == d.Acao)) { repetidas++; continue; }
-            var numeros = new
-            {
-                nome = cj.Nome, taxa = d.Numeros.Taxa, gasto = cj.GastoVidaCentavos / 100.0, multiplo = d.Numeros.Multiplo, avaliados = entrada.Avaliados, ponderado = d.Numeros.Ponderado,
-                dias_entrega = cj.DiasEntrega, custoCentavos = d.Numeros.CustoCentavos, teto_centavos = teto, copia_diario_centavos = d.CopiaDiarioCentavos, segurou_por_pendentes = d.SegurouPorPendentes,
-            };
-            var texto = TextoDaTrilha(d, cj.Nome);
-            var pend = d.Avisos.Select(a => a.Ref).Where(x => !string.IsNullOrWhiteSpace(x)).Distinct().ToArray();
+            var entrada = Executor.EntradaDe(cj, c.Slug, null);
+            var d = Arvore.Decidir(entrada, new EntradaAoVivo(cj.Ativo, cj.DiarioCentavos), teto, clienteConverte, p);
+            avaliados.Add(Rodada.AvaliadoNaResposta(cj.AdsetId, cj.Nome, d));
+            if (!Rodada.ViraRecomendacao(d.Acao)) continue;
+            if (!Rodada.CabeNaCadencia(d.Acao, cj.DiasEntrega, p, entrada.Memoria)) { foraDaCadencia++; continue; }
+            if (Rodada.Repetida(pendentes, cj.AdsetId, d.Acao)) { repetidas++; continue; }
+            var numeros = Rodada.NumerosJson(Rodada.Numeros(d, entrada, cj.Nome, teto));
+            var texto = Rodada.TextoDaTrilha(d, cj.Nome);
+            var acao = d.Acao.ToString();
             try
             {
-                await db.ExecutarAsync(Sql.Fmt($"""
+                /* o "não existe a mesma pendente" vai também no próprio insert: duas rodadas juntas não gravam duas */
+                var n = await db.ExecutarAsync(Sql.Fmt($"""
                     insert into public.trafego_motor_recomendacao (cliente_slug, nivel, meta_id, acao, numeros, regras_usadas, chaves, pendencias, vault_sha, contagem_mql, texto, texto_fonte)
-                    values ({c.Slug}, 'conjunto', {cj.AdsetId}, {d.Acao.ToString()}, {new Jsonb(System.Text.Json.JsonSerializer.Serialize(numeros))}, {d.Chaves.ToArray()}, {d.Chaves.ToArray()}, {pend}, {vaultSha}, 'regua', {texto}, 'trilha')
+                    select {c.Slug}, 'conjunto', {cj.AdsetId}, {acao}, {new Jsonb(numeros)}, {d.Chaves.ToArray()}, {d.Chaves.ToArray()}, {Rodada.Pendencias(d)}, {vaultSha}, 'regua', {texto}, 'trilha'
+                    where not exists (select 1 from public.trafego_motor_recomendacao x where x.cliente_slug = {c.Slug} and x.meta_id = {cj.AdsetId} and x.acao = {acao}
+                                      and not exists (select 1 from public.trafego_motor_decisao y where y.recomendacao_id = x.id))
                     """));
-                gravadas++;
+                if (n > 0) { gravadas++; pendentes.Add(Rodada.ChaveDeDedup(cj.AdsetId, acao)); }
+                else repetidas++;
             }
-            catch (Exception e) { log.LogError("a recomendação de {Adset} não gravou: {Erro}", cj.AdsetId, e.Message); }
+            catch (Exception e)
+            {
+                falharam.Add(cj.AdsetId);
+                log.LogError("a recomendação {Acao} de {Adset} não gravou: {Erro}", acao, cj.AdsetId, e.Message);
+            }
         }
         var recs = await automacao.RecomendacoesAsync(c.Slug);
-        await registro.TrilhaAsync("rodou_motor", por, c.Slug, "ok", null, "motor", null, new { via = "api", gravadas, repetidas, avaliados = avaliados.Count, vault = vaultSha[..Math.Min(7, vaultSha.Length)] }, duracaoMs: (int)(DateTime.UtcNow - inicio).TotalMilliseconds);
-        return (200, new { gravadas, repetidas, nao_agiu = naoAgiu, vault_sha = vaultSha, avaliados, recomendacoes = recs.Select(r => new { id = r.Id, meta_id = r.MetaId, acao = r.Acao.ToString(), estado = r.Estado.ToString().ToLowerInvariant(), nome = r.Nome, texto = r.Texto }) });
+        /* uma PAUSAR que não gravou não pode sair como "ok": a trilha diz quais conjuntos ficaram sem a recomendação */
+        var erroDaRodada = falharam.Count > 0 ? $"{falharam.Count} recomendação(ões) não gravaram (conjuntos {string.Join(", ", falharam)}): rode o motor de novo." : null;
+        await registro.TrilhaAsync("rodou_motor", por, c.Slug, falharam.Count > 0 ? "erro" : "ok", erroDaRodada, "motor", null,
+            new { via = "api", gravadas, repetidas, fora_da_cadencia = foraDaCadencia, avaliados = avaliados.Count, falharam, vault = Curto(vaultSha) }, duracaoMs: Duracao());
+        return (200, new
+        {
+            gravadas, repetidas, fora_da_cadencia = foraDaCadencia, falharam, erro = erroDaRodada, nao_agiu = naoAgiu, vault_sha = vaultSha, avaliados,
+            recomendacoes = recs.Select(r => new { id = r.Id, meta_id = r.MetaId, acao = r.Acao.ToString(), estado = r.Estado.ToString().ToLowerInvariant(), nome = r.Nome, texto = r.Texto }),
+        });
     }
 
-    /// <summary>O texto da recomendação a partir da trilha (as regras que dispararam), como o V1 escreve sem o modelo.</summary>
-    public static string TextoDaTrilha(Decisao d, string nome)
-    {
-        var (rotulo, _) = Arvore.RotuloDaAcao(d.Acao);
-        var disparou = d.Trilha.Where(t => t.Resultado == ResultadoDaRegra.Disparou).Select(t => t.Texto).ToList();
-        var corpo = disparou.Count > 0 ? string.Join(" ", disparou) : d.Avisos.FirstOrDefault()?.Texto ?? "";
-        return $"{rotulo} \"{nome}\": {corpo}";
-    }
+    static string Curto(string sha) => sha[..Math.Min(7, sha.Length)];
+
+    /// <summary>O texto da recomendação a partir da trilha, como o V1 escreve sem o modelo (Core/Motor/Rodada).</summary>
+    public static string TextoDaTrilha(Decisao d, string nome) => Rodada.TextoDaTrilha(d, nome);
 }

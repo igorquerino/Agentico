@@ -357,19 +357,10 @@ public sealed class Executor(Db db, MetaEscrita meta, MetaGraph graph, Registro 
         });
     }
 
-    /// <summary>A entrada da árvore a partir do conjunto como o Ongoing o lê (a carga de hoje).</summary>
-    internal static EntradaConjunto EntradaDe(ConjuntoEmVeiculacao cj, string slug, string? formato)
-    {
-        var hoje = DateOnly.FromDateTime(DateTime.Now);
-        var leads = cj.Leads;
-        var fmt = (formato ?? "").ToLowerInvariant() switch { "video" => Formato.Video, "misto" => Formato.Misto, _ => Formato.Imagem };
-        var memoria = new MemoriaDoConjunto(
-            cj.UltimaAcaoExecutada is { } ua ? hoje.DayNumber - ua.DayNumber : null,
-            cj.PendenteDesde is { } pd ? hoje.DayNumber - pd.DayNumber : null,
-            cj.CopiasVivas);
-        return new EntradaConjunto(slug, cj.AdsetId, cj.Nome, fmt, cj.AnunciosAtivos, cj.DiasEntrega, cj.GastoVidaCentavos, leads.Count,
-            leads.Count(l => l.Situacao is Situacao.Mql or Situacao.NaoMql), leads.Count(l => l.Situacao == Situacao.Pendente),
-            leads.Count(l => l.Situacao == Situacao.Mql && l.Tier == Tier.A), leads.Count(l => l.Situacao == Situacao.Mql && l.Tier == Tier.B), leads.Count(l => l.Situacao == Situacao.Mql && l.Tier == Tier.C),
-            cj.Leitura, cj.CoberturaCompleta, memoria);
-    }
+    /// <summary>A entrada da árvore a partir do conjunto como o Ongoing o lê (a carga de hoje, com a leitura, a cobertura,
+    /// os anúncios e a memória que Core/Motor/Carga calculou). A MESMA função na rodada (MotorRodada) e aqui na
+    /// reconferência. `formato` é o da foto, quando quem chama o leu à parte; null usa o que a carga já leu. Formato que
+    /// não é imagem/video/misto é Desconhecido, e a árvore dá SEM_BASE: adivinhar Imagem podia pausar um vídeo.</summary>
+    internal static EntradaConjunto EntradaDe(ConjuntoEmVeiculacao cj, string slug, string? formato) =>
+        Rodada.EntradaDe(cj, slug, formato is null ? cj.Formato : Carga.FormatoDe(formato), Fuso.DiaDaConta(DateTime.UtcNow));
 }

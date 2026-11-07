@@ -26,7 +26,9 @@ public enum Estagio { Chegada = 0, Assets = 1, Ficha = 2, Copy = 3, Design = 4, 
 
 public enum TipoPeca { Estatico, Video }
 
-public enum EstadoDaRecomendacao { Pendente, Aceita, Negada, Aplicada, Falhou, Incerto }
+/// <summary>O estado de uma recomendação (a última decisão). `Desconhecido` = uma decisão ou ação gravada que esta versão
+/// não conhece: aparece, mas não oferece aceite.</summary>
+public enum EstadoDaRecomendacao { Pendente, Aceita, Negada, Aplicada, Falhou, Incerto, Desconhecido }
 
 public enum TipoDeAsset { LogoPrincipal, LogoVariacao, Tela }
 

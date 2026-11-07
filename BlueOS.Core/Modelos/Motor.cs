@@ -109,7 +109,9 @@ public sealed record EstruturaProposta(
     IReadOnlyList<string> ChavesUsadas,
     string VaultSha)
 {
-    /// <summary>O hash da estrutura: é o que torna o Publicar idempotente (publicar/start.ts).</summary>
+    /// <summary>Um hash da estrutura PROPOSTA (etapa, público, verba, budget e vault): é a chave de idempotência só da
+    /// demonstração. NÃO é o hash que a API grava ao publicar: o Publicar real usa <c>StartRegras.HashDaEstrutura</c>
+    /// (nomes, artes, texto e formulário), então não mostre este como "o hash da publicação".</summary>
     public string Hash
     {
         get
