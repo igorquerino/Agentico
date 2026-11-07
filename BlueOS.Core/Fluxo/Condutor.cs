@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using BlueOS.Core.Api;
 using BlueOS.Core.Copy;
 using BlueOS.Core.Design;
@@ -91,9 +92,28 @@ public sealed class Condutor(IBlueApi api)
 
     /* ---- o Start ---------------------------------------------------------------- */
 
+    /// <summary>Os Starts em curso, por slug: um Start por cliente de cada vez. A guarda não pode morar no cliente,
+    /// porque a releitura da carteira cria outra instância (e, com ela, um EstadoDaAutomacao vazio).</summary>
+    static readonly ConcurrentDictionary<string, EstadoDaAutomacao> StartsEmCurso = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>O estado vivo do Start deste cliente, se houver um em curso.</summary>
+    public static EstadoDaAutomacao? EstadoEmCurso(string slug) => StartsEmCurso.TryGetValue(slug, out var e) ? e : null;
+
+    /// <summary>A fonte chama ao reler o cliente: a instância nova herda o estado do Start em curso, e o card não
+    /// volta a oferecer o Start enquanto o condutor ainda roda.</summary>
+    public static void ReaplicarEstado(Cliente c) { if (EstadoEmCurso(c.Slug) is { } e) c.Automacao = e; }
+
     public async Task ConduzirAsync(Cliente c, PlanoDoStart plano, Action<Cliente>? aoMudar = null, CancellationToken ct = default)
     {
         var e = c.Automacao;
+        var slug = c.Slug;
+        if (!StartsEmCurso.TryAdd(slug, e))
+        {
+            /* Já há um Start deste cliente rodando: um segundo pagaria copy e imagens de novo. Mostra o que está em curso. */
+            ReaplicarEstado(c);
+            aoMudar?.Invoke(c);
+            return;
+        }
         e.EmCurso = true; e.PrecisaDeVoce = null; e.Trilha.Clear(); e.IniciadoEm = DateTime.Now; e.TerminadoEm = null;
         void Passo(PassoDoStart p, string msg) { e.Passo = p; e.Mensagem = msg; e.Trilha.Add($"{DateTime.Now:HH:mm:ss} {msg}"); aoMudar?.Invoke(c); }
         void Pare(string oQueFalta) { e.PrecisaDeVoce = oQueFalta; e.Passo = PassoDoStart.Parou; e.Mensagem = "precisa de você: " + oQueFalta; e.Trilha.Add($"{DateTime.Now:HH:mm:ss} parou: {oQueFalta}"); }
@@ -124,7 +144,7 @@ public sealed class Condutor(IBlueApi api)
 
             /* 3. a copy das etapas que a faixa pede */
             var exigidas = Estagios.EtapasExigidas(c, p);
-            bool TemCopy(Etapa et) => c.Pecas.Any(x => x.Etapa == et && x.Aprovada && x.CrivoOk);
+            bool TemCopy(Etapa et) => c.Pecas.Any(x => Estagios.CopyUsavel(x, et));
             var faltam = exigidas.Where(et => !TemCopy(et)).ToList();
             if (faltam.Count > 0)
             {
@@ -143,18 +163,20 @@ public sealed class Condutor(IBlueApi api)
             {
                 ct.ThrowIfCancellationRequested();
                 if (c.PilotoDa(et) is not null && Estagios.ValidarAssentos(c, p).First(a => a.Vaga == et).Ok) continue;
-                Etapa EtapaDa(Arte a) => c.Pecas.FirstOrDefault(x => x.Id == a.PecaId)?.Etapa ?? a.Etapa;
-                var arte = c.Artes.FirstOrDefault(a => a.Aprovada && EtapaDa(a) == et && a.Formato == "feed")
-                        ?? c.Artes.FirstOrDefault(a => EtapaDa(a) == et && a.Formato == "feed");
+                /* Só reaproveita arte JÁ APROVADA cuja copy de origem está no cliente e serve à etapa (aprovada, passou
+                   no crivo, estática). Arte reprovada, de copy desaprovada ou sem copy (biblioteca, etapa presumida)
+                   nunca vira piloto: sem candidata, desenha uma nova. */
+                var arte = c.Artes.FirstOrDefault(a => a.Aprovada && a.Formato == "feed" && c.Pecas.Any(x => x.Id == a.PecaId && Estagios.CopyUsavel(x, et)));
                 if (arte is null)
                 {
-                    var peca = c.Pecas.First(x => x.Etapa == et && x.Aprovada && x.CrivoOk);
+                    var peca = c.Pecas.First(x => Estagios.CopyUsavel(x, et));
                     Passo(PassoDoStart.Design, $"desenhando o criativo de {et} (1 a 3 min no Designer)");
                     var novas = await api.GerarArtesAsync(c, [peca.Id], ["feed"], TemplatesDoDesigner.Auto);
                     arte = novas.FirstOrDefault(a => a.Formato == "feed") ?? novas.FirstOrDefault();
                     if (arte is null) { Pare($"o Designer não devolveu a arte de {et}"); return; }
+                    /* só a arte que o condutor acabou de desenhar é aprovada aqui: quem decidiu foi o gestor ao apertar Start */
+                    if (!arte.Aprovada) await api.AprovarArteAsync(c, arte.Id, true);
                 }
-                if (!arte.Aprovada) await api.AprovarArteAsync(c, arte.Id, true);
                 await api.EscolherPilotoAsync(c, et, arte.Id);
                 e.Trilha.Add($"{DateTime.Now:HH:mm:ss} piloto de {et}: {arte.Titulo}");
             }
@@ -170,18 +192,34 @@ public sealed class Condutor(IBlueApi api)
                 Passo(PassoDoStart.Campanha, "publicando o Start na Meta, tudo pausado");
                 var pub = await api.PublicarAsync(c, new PedidoDePublicacao(c.Conta.PoliticaUrl, c.Conta.Link, c.Conta.FormularioId, null));
                 if (!pub.Ok) { Pare($"o Publicar recusou [{pub.Codigo}]: {pub.Motivo}"); return; }
+                if (pub.Publicacao is { Estado: "sem_criativo" })
+                {
+                    /* A Meta não deixou o app criar o criativo: há campanha, formulário e conjuntos (pausados), mas nenhum
+                       anúncio. Não diz "publicada" nem liga o agente; o próximo Start segue direto para o modo. */
+                    e.Trilha.Add($"{DateTime.Now:HH:mm:ss} campanha, formulário e conjuntos criados na Meta, pausados, SEM anúncio: o criativo ficou com o gestor");
+                    Pare("subir os anúncios no Gerenciador: a campanha, o formulário e os conjuntos estão criados e pausados, mas a Meta não deixou o app criar o criativo (a cola de cada anúncio está nos avisos da etapa Campanha). Depois, dê Start de novo para ligar o agente.");
+                    return;
+                }
                 e.Trilha.Add($"{DateTime.Now:HH:mm:ss} " + (pub.Simulado ? "campanha publicada (Meta simulada fora da produção)" : "campanha publicada na Meta, pausada"));
             }
 
             /* 6. o agente, no modo escolhido */
+            ct.ThrowIfCancellationRequested();
             Passo(PassoDoStart.Modo, $"ligando o agente no modo {Rotulo(plano.Modo)}");
             await api.MudarModoAsync(c, plano.Modo);
             e.Passo = PassoDoStart.Pronto; e.Mensagem = $"em automação, modo {Rotulo(plano.Modo)}";
             e.Trilha.Add($"{DateTime.Now:HH:mm:ss} pronto: agente no modo {Rotulo(plano.Modo)}");
         }
-        catch (OperationCanceledException) { Pare("Start cancelado"); }
+        /* Só é "cancelado" quando quem chamou cancelou: o timeout do HttpClient também é OperationCanceledException,
+           e ele cai na mensagem do erro (que, numa escrita na Meta, diz que o estado é incerto). */
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { Pare("Start cancelado"); }
         catch (Exception ex) { Pare(ex.Message); }
-        finally { e.EmCurso = false; e.TerminadoEm = DateTime.Now; aoMudar?.Invoke(c); }
+        finally
+        {
+            e.EmCurso = false; e.TerminadoEm = DateTime.Now;
+            StartsEmCurso.TryRemove(new KeyValuePair<string, EstadoDaAutomacao>(slug, e));
+            aoMudar?.Invoke(c);
+        }
     }
 
     /// <summary>A mesma régua, pelo conteúdo (a releitura do cliente cria outra instância): não regrava à toa.</summary>

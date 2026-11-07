@@ -67,23 +67,18 @@ public sealed class FonteDeDados
         var senha = Environment.GetEnvironmentVariable("BLUEOS_V1_SENHA");
         var apiUrl = Environment.GetEnvironmentVariable("BLUEOS_API_URL");
         if (string.IsNullOrWhiteSpace(login) || string.IsNullOrWhiteSpace(senha)) return null;
-        /* Com BLUEOS_API_URL, a fonte é a API .NET (e o V1, se informado, fica para a Meta). */
+        /* Com BLUEOS_API_URL, a fonte é a API .NET (o endereço do V1, se informado, só fica gravado). */
         if (!string.IsNullOrWhiteSpace(apiUrl)) return await UsarApiAsync(apiUrl.Trim(), string.IsNullOrWhiteSpace(url) ? null : url.Trim(), login.Trim(), senha);
         if (string.IsNullOrWhiteSpace(url)) return null;
         return await UsarV1Async(url.Trim(), login.Trim(), senha);
     }
 
-    /// <summary>Conecta à API .NET pela sessão da pessoa. O V1, quando informado, entra junto para o que ainda escreve na Meta.</summary>
+    /// <summary>Conecta à API .NET pela sessão da pessoa. A API faz leitura, geração e escrita na Meta: não há mais login
+    /// no V1 (ele só mandava a senha a um segundo host e segurava a conexão se o V1 travasse). `v1Url` fica só para
+    /// gravar o endereço na configuração.</summary>
     public async Task<string> UsarApiAsync(string apiUrl, string? v1Url, string login, string senha)
     {
-        V1Api? v1 = null;
-        if (!string.IsNullOrWhiteSpace(v1Url))
-        {
-            v1 = new V1Api(v1Url);
-            try { await v1.LoginAsync(login, senha); }
-            catch { v1.Dispose(); v1 = null; }
-        }
-        var api = new ApiNetApi(apiUrl, v1);
+        var api = new ApiNetApi(apiUrl, null);
         var nome = await api.LoginAsync(login, senha);
         (Atual as IDisposable)?.Dispose();
         Atual = api;
