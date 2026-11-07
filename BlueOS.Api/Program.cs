@@ -290,7 +290,7 @@ api.MapPost("/clientes/{slug}/copy/gerar", async (string slug, CopyPedido p, Htt
     var cli = await carteira.ObterAsync(esc, slug);
     if (cli is null) return Results.Json(new { error = "cliente fora do seu escopo" }, statusCode: 403);
     var itens = (p.Itens ?? []).Select(i => new ItemDoPedido((i.Tipo ?? "estatico").ToLowerInvariant(), (i.Funil ?? "mofu").ToLowerInvariant(), i.NPecas ?? i.N_Pecas ?? 3)).ToList();
-    var (status, corpo) = await copy.GerarAsync(cli, new PedidoDeCopy(itens, p.Briefing, p.Referencia, p.Nome), Guid.Parse(esc.UserId));
+    var (status, corpo) = await copy.GerarAsync(cli, new PedidoDeCopy(itens, p.Briefing, p.Referencia, p.Nome), Guid.Parse(esc.UserId), c.RequestAborted);
     return Results.Json(corpo, statusCode: status);
 });
 
@@ -299,7 +299,7 @@ api.MapPost("/clientes/{slug}/pecas/{id}/ajustar", async (string slug, string id
     var esc = await escopo.DoUsuarioAsync(UserId(c));
     var cli = await carteira.ObterAsync(esc, slug);
     if (cli is null) return Results.Json(new { error = "cliente fora do seu escopo" }, statusCode: 403);
-    var (status, corpo) = await copy.AjustarAsync(cli, id, p.Instrucao ?? "", p.Campos, Guid.Parse(esc.UserId));
+    var (status, corpo) = await copy.AjustarAsync(cli, id, p.Instrucao ?? "", p.Campos, Guid.Parse(esc.UserId), c.RequestAborted);
     return Results.Json(corpo, statusCode: status);
 });
 
@@ -385,7 +385,7 @@ api.MapPost("/clientes/{slug}/artes/gerar", async (string slug, ArtePedido p, Ht
     var esc = await escopo.DoUsuarioAsync(UserId(c));
     var cli = await carteira.ObterAsync(esc, slug);
     if (cli is null) return Results.Json(new { error = "cliente fora do seu escopo" }, statusCode: 403);
-    var (status, corpo) = await designer.GerarAsync(cli, new PedidoDeArte(p.PecaIds ?? [], p.Formatos ?? [], p.Template, p.DesignerLoteId, p.Encerrar ?? false, p.Ajuste), Guid.Parse(esc.UserId));
+    var (status, corpo) = await designer.GerarAsync(cli, new PedidoDeArte(p.PecaIds ?? [], p.Formatos ?? [], p.Template, p.DesignerLoteId, p.Encerrar ?? false, p.Ajuste), Guid.Parse(esc.UserId), c.RequestAborted);
     return Results.Json(corpo, statusCode: status);
 });
 

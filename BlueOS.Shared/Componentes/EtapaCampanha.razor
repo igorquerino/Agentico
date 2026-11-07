@@ -1,5 +1,5 @@
 @* O Start: a estrutura calculada pelo budget e pelo nicho, com os nomes da Meta, publicada pausada. *@
-@if (Cliente.Publicacao is { Estado: "ok" } pub)
+@if (Estagios.CampanhaPublicada(Cliente) && Cliente.Publicacao is { } pub)
 {
     <div class="caixa">
         <h3>Campanha publicada @(pub.Simulado ? "(Meta simulada)" : "") &middot; @pub.Em.ToString("dd/MM HH:mm")</h3>

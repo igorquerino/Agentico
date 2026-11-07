@@ -180,7 +180,7 @@ public sealed class Carteira(Db db)
                             Headline = Str(p, "headline") ?? "", Sub = Str(p, "corpo") ?? "", Cta = Str(p, "cta") ?? "",
                             AnguloHeadline = Str(p, "angulo_headline") ?? "outro", PapelSub = Str(p, "papel_sub") ?? "fragmento", TipoCta = Str(p, "tipo_cta") ?? "outro",
                             Aprovada = p.TryGetProperty("aprovada", out var ap) && ap.ValueKind == JsonValueKind.True,
-                            CrivoOk = !(p.TryGetProperty("crivo_ok", out var ck) && ck.ValueKind == JsonValueKind.False),
+                            CrivoOk = p.TryGetProperty("crivo_ok", out var ck) && ck.ValueKind == JsonValueKind.True,
                         });
                 c.Lotes.Insert(0, lote);
             }

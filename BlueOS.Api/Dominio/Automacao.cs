@@ -83,7 +83,7 @@ public sealed class Automacao(Db db)
             Arr(linha.Insights).Select(i => new LinhaDeInsight(Str(i, "ad_id"), Str(i, "adset_id"), Str(i, "campaign_id"), Dia(Str(i, "dia")) ?? hoje, Dec(i, "gasto"), (long)Dec(i, "leads"))).ToList(),
             Arr(linha.Leads).Select(l => new LinhaDeLead(Str(l, "lead_id") ?? "", Str(l, "adset_id"), Str(l, "ad_id"), Utc(Str(l, "criado_em")),
                 Respostas(l.TryGetProperty("respostas", out var rs) ? rs : default))).ToList(),
-            Arr(linha.Fotos).Select(f => new FotoDoConjunto(Str(f, "adset_id") ?? "", Str(f, "campaign_id"), Str(f, "nome"), Str(f, "status"),
+            Arr(linha.Fotos).Select(f => new BlueOS.Core.Motor.FotoDoConjunto(Str(f, "adset_id") ?? "", Str(f, "campaign_id"), Str(f, "nome"), Str(f, "status"),
                 f.TryGetProperty("orcamento", out var o) && o.ValueKind == JsonValueKind.Number ? (long)o.GetDecimal() : null, Str(f, "formato"), Utc(Str(f, "visto_em")))).ToList(),
             Arr(linha.Marcas).Select(m => new MarcaDaCarga(Dia(Str(m, "dia")) ?? hoje, Str(m, "estado"), Dias(m, "dias"), Dias(m, "dias_ok"), Dec(m, "recusas"))).ToList(),
             Arr(linha.Registro).Select(x => new RecomendacaoNaMemoria(Str(x, "id") ?? "", Str(x, "meta_id") ?? "", Str(x, "acao") ?? "", Str(x, "estado") ?? "pendente",

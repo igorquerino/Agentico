@@ -112,6 +112,7 @@ public sealed class Escritas(Db db, ILogger<Escritas> log)
     {
         null => null,
         <= 0 => "o teto por MQL tem de ser maior que zero (em R$), ou vazio para desligar.",
+        var t when Dinheiro.TetoEmCentavos(t) is null => "o teto por MQL tem de valer pelo menos R$ 0,01.",
         > TetoMqlMaximoReais => "teto por MQL acima de R$ 100.000 — confere se não sobrou um zero.",
         _ => null,
     };

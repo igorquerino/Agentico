@@ -292,7 +292,7 @@ public sealed class V1Api : IBlueApi, IDisposable
                         Headline = S(p, "headline") ?? "", Sub = S(p, "corpo") ?? "", Cta = S(p, "cta") ?? "",
                         /* o histórico não traz as etiquetas nem o crivo: o que já estava em memória (lote gerado aqui) fica */
                         AnguloHeadline = local?.AnguloHeadline ?? "outro", PapelSub = local?.PapelSub ?? "fragmento", TipoCta = local?.TipoCta ?? "outro",
-                        CrivoOk = local?.CrivoOk ?? true, MotivoDoCrivo = local?.MotivoDoCrivo, Hipotese = local?.Hipotese ?? "",
+                        CrivoOk = local?.CrivoOk == true, MotivoDoCrivo = local?.MotivoDoCrivo, Hipotese = local?.Hipotese ?? "",
                         Aprovada = B(p, "aprovada") ?? local?.Aprovada ?? false,
                     });
                 }
@@ -468,7 +468,7 @@ public sealed class V1Api : IBlueApi, IDisposable
                     Id = S(p, "peca_id") ?? S(p, "id") ?? Guid.NewGuid().ToString("n"), Etapa = etapa, Tipo = tipo, Numero = (int)(D(p, "ordem") ?? ++n),
                     Headline = S(p, "headline") ?? S(p, "hook") ?? "", Sub = S(p, "sub") ?? S(p, "body") ?? S(p, "corpo") ?? "", Cta = S(p, "cta") ?? "",
                     AnguloHeadline = S(p, "angulo_headline") ?? "outro", PapelSub = S(p, "papel_sub") ?? "fragmento", TipoCta = S(p, "tipo_cta") ?? "outro",
-                    CrivoOk = B(p, "crivo_ok") ?? true, MotivoDoCrivo = S(p, "crivo_motivo"), Hipotese = S(p, "hipotese") ?? "",
+                    CrivoOk = B(p, "crivo_ok") == true, MotivoDoCrivo = S(p, "crivo_motivo"), Hipotese = S(p, "hipotese") ?? "",
                 });
             }
         }

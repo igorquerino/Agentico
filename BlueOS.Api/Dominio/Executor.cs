@@ -53,7 +53,7 @@ public sealed class Executor(Db db, MetaEscrita meta, MetaGraph graph, Registro 
         var insights = await db.ListaAsync(Sql.Fmt($"select adset_id, dia, sum(gasto) as gasto from public.trafego_insight_dia where cliente_slug = {slug} and dia >= {desde} group by adset_id, dia"),
             r => new GastoDoDia(r.S("adset_id"), r.Data("dia") ?? hoje, r.Dec("gasto") ?? 0m));
         var fotos = await db.ListaAsync(Sql.Fmt($"select adset_id, status, orcamento_diario_centavos from public.trafego_adset_estado where cliente_slug = {slug}"),
-            r => new FotoDoConjunto(r.S("adset_id") ?? "", r.S("status"), r.L("orcamento_diario_centavos")));
+            r => new BlueOS.Core.Executor.FotoDoConjunto(r.S("adset_id") ?? "", r.S("status"), r.L("orcamento_diario_centavos")));
         /* As cópias desde a última carga (com uma hora de folga para a carga que leu a conta antes da cópia nascer). */
         var copias = await db.ListaAsync(Sql.Fmt($"""
             select a.estado, a.resultado->>'copia_id' as copia_id,
@@ -281,7 +281,7 @@ public sealed class Executor(Db db, MetaEscrita meta, MetaGraph graph, Registro 
         if (aceita && !esc.PodeAplicarNaMeta) return (403, new { error = "aceitar recomendação do motor é de head ou acima. Negar você pode." });
         var por = Guid.Parse(esc.UserId);
 
-        var tipoNaMeta = Enum.TryParse<Acao>(rec.Acao, out var acao) ? TipoNaMetaExt.DaAcao(acao) : null;
+        var tipoNaMeta = Rodada.AcaoDoNome(rec.Acao) is { } acao ? TipoNaMetaExt.DaAcao(acao) : null;
         var vaiEscrever = aceita && tipoNaMeta is not null;
         var ehTroca = rec.Acao == "TROCAR_CRIATIVO";
 

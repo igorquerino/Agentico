@@ -215,7 +215,7 @@ public class G6aCondutorTests
         {
             DepoisDaCopy = lote => { foreach (var p in lote.Pecas.Where(x => x.Etapa == Etapa.BOFU)) { p.CrivoOk = false; p.MotivoDoCrivo = "promessa sem prova"; } },
         };
-        var slug = await api.SemearAsync("horizonte-imoveis");   /* R$ 4.500: f2, MOFU e BOFU */
+        var slug = await api.SemearAsync("horizonte-imoveis", c => c.Conta.TemLista = true);   /* R$ 4.500 com lista: f2, MOFU e BOFU */
         var c = api.DoBanco(slug);
         await new Condutor(api).ConduzirAsync(c, Plano(c));
 
@@ -233,6 +233,7 @@ public class G6aCondutorTests
         var api = new ApiQueRele();
         var slug = await api.SemearAsync("horizonte-imoveis", c =>
         {
+            c.Conta.TemLista = true;   /* com lista o f2 pede MOFU e BOFU */
             c.Lotes.Add(new LoteDeCopy
             {
                 Id = "lote-t", Numero = 1,
@@ -267,7 +268,10 @@ public class G6aCondutorTests
     {
         var api = new ApiQueRele();
         var slug = await api.SemearAsync("horizonte-imoveis", c =>
-            c.Lotes.Add(new LoteDeCopy { Id = "lote-v", Numero = 1, Pecas = [Peca("v1", Etapa.MOFU, true, TipoPeca.Video), Peca("v2", Etapa.BOFU, true, TipoPeca.Video)] }));
+        {
+            c.Conta.TemLista = true;   /* com lista o f2 pede MOFU e BOFU */
+            c.Lotes.Add(new LoteDeCopy { Id = "lote-v", Numero = 1, Pecas = [Peca("v1", Etapa.MOFU, true, TipoPeca.Video), Peca("v2", Etapa.BOFU, true, TipoPeca.Video)] });
+        });
         var c = api.DoBanco(slug);
         Assert.Equal(Estagio.Copy, Estagios.DoCliente(c, api.Parametros));
         Assert.Contains("peça aprovada de MOFU", Estagios.CopyPronta(c, api.Parametros).Pendencias);
