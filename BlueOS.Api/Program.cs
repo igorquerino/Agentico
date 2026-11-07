@@ -81,10 +81,14 @@ app.UseExceptionHandler(h => h.Run(async ctx =>
     await ctx.Response.WriteAsJsonAsync(new { error = msg, detalhe });
 }));
 
-/* ---- saúde: a API sobe mesmo sem banco configurado; o /health diz o que falta ---- */
-app.MapGet("/api/health", async (Db db, IConfiguration cfg, MetaGraph graph, MetaMcp mcp, Ia ia, ImagemIa imagem) =>
+/* ---- saúde: a API sobe mesmo sem banco configurado; o /health diz o que falta ----
+   Sem sessão, só `ok` e `banco` (como o /api/health do V1): a configuração (ref, travas da Meta, contas de teste,
+   squads do MCP, origem das chaves, erro do banco) só sai para quem está logado, ou em Development. */
+app.MapGet("/api/health", async (HttpContext http, Db db, IConfiguration cfg, MetaGraph graph, MetaMcp mcp, Ia ia, ImagemIa imagem) =>
 {
     var banco = await db.ConfereAsync();
+    if (!app.Environment.IsDevelopment() && await UsuarioDaSessaoAsync(http) is null)
+        return Results.Ok(new { ok = banco.Ok, banco = banco.Ok ? "conectado" : "indisponível" });
     return Results.Ok(new
     {
         ok = banco.Ok,
@@ -126,22 +130,45 @@ app.MapPost("/api/login", async (LoginPedido p, Db db, SupabaseAuth auth, Sessoe
     });
 });
 
-/* ---- a partir daqui, tudo exige a sessão ------------------------------------------ */
+/* ---- a partir daqui, tudo exige a sessão ------------------------------------------
+   A sessão é conferida no GoTrue (JWT válido e conta não banida) e guardada por até 5 min, sem renovar no acerto.
+   O cargo que só lê (o `rh`, lib/os/somente-leitura.ts do V1) não escreve em nada: todo POST, PUT, PATCH ou DELETE
+   de quem só tem cargos de leitura leva 403 aqui, antes da rota. */
 var api = app.MapGroup("/api").AddEndpointFilter(async (ctx, next) =>
 {
-    var sessoes = ctx.HttpContext.RequestServices.GetRequiredService<Sessoes>();
-    var auth = ctx.HttpContext.RequestServices.GetRequiredService<SupabaseAuth>();
-    var cab = ctx.HttpContext.Request.Headers.Authorization.ToString();
-    var token = cab.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase) ? cab[7..].Trim() : "";
-    if (token == "") return Results.Json(new { error = "sem sessão" }, statusCode: 401);
-    var userId = sessoes.UserIdDe(token) ?? await auth.UserIdDoTokenAsync(token);
+    var http = ctx.HttpContext;
+    if (TokenDe(http) == "") return Results.Json(new { error = "sem sessão" }, statusCode: 401);
+    var userId = await UsuarioDaSessaoAsync(http);
     if (userId is null) return Results.Json(new { error = "sem sessão: faça o login de novo." }, statusCode: 401);
-    sessoes.Guardar(token, userId, DateTime.UtcNow.AddMinutes(5));
-    ctx.HttpContext.Items["userId"] = userId;
+    http.Items["userId"] = userId;
+    if (Escopo.EhMetodoDeEscrita(http.Request.Method))
+    {
+        var esc = await http.RequestServices.GetRequiredService<Escopo>().DoUsuarioAsync(userId);
+        if (esc.SomenteLeitura) return Results.Json(new { error = Escopo.MotivoSomenteLeitura }, statusCode: 403);
+    }
     return await next(ctx);
 });
 
 static string UserId(HttpContext c) => (string)c.Items["userId"]!;
+
+static string TokenDe(HttpContext http)
+{
+    var cab = http.Request.Headers.Authorization.ToString();
+    return cab.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase) ? cab[7..].Trim() : "";
+}
+
+/* O usuário da sessão: o cache só responde o que o GoTrue conferiu há menos de 5 min (e antes do `exp` do JWT);
+   fora disso, o GoTrue confere de novo, e só então a sessão volta ao cache. */
+static async Task<string?> UsuarioDaSessaoAsync(HttpContext http)
+{
+    var token = TokenDe(http);
+    if (token == "") return null;
+    var sessoes = http.RequestServices.GetRequiredService<Sessoes>();
+    if (sessoes.UserIdDe(token) is { } guardado) return guardado;
+    var userId = await http.RequestServices.GetRequiredService<SupabaseAuth>().UserIdDoTokenAsync(token);
+    if (userId is not null) sessoes.Guardar(token, userId, DateTime.UtcNow.Add(Sessoes.Janela));
+    return userId;
+}
 
 api.MapGet("/carteira", async (HttpContext c, Escopo escopo, Carteira carteira, Meta meta) =>
 {
@@ -161,14 +188,15 @@ api.MapGet("/clientes/{slug}", async (string slug, HttpContext c, Escopo escopo,
     return Results.Ok(cli);
 });
 
-api.MapGet("/clientes/{slug}/estrutura", async (string slug, HttpContext c, Escopo escopo, Carteira carteira) =>
+api.MapGet("/clientes/{slug}/estrutura", async (string slug, HttpContext c, Escopo escopo, Carteira carteira, Escritas escritas) =>
 {
     var esc = await escopo.DoUsuarioAsync(UserId(c));
     var cli = await carteira.ObterAsync(esc, slug);
     if (cli is null) return Results.Json(new { error = "cliente fora do seu escopo" }, statusCode: 403);
     var p = ParametrosMotor.PadraoDoVault;
     if (cli.BudgetMensal is null or <= 0) return Results.Ok(new { ok = false, falta = "budget", motivo = "sem budget mensal de ads: preencha no card Tráfego do cliente para o Start montar a estrutura." });
-    if (!BlueOS.Core.Setup.Nichos.Valido(cli.NichoSlug)) return Results.Ok(new { ok = false, falta = "nicho", motivo = "sem nicho no card Tráfego: é ele que nomeia os conjuntos e orienta a copy." });
+    /* o nicho do código ou o do catálogo ativo (trafego_nicho), como o nichoValido do V1 */
+    if (!await escritas.NichoValidoAsync(cli.NichoSlug, naDuvida: true)) return Results.Ok(new { ok = false, falta = "nicho", motivo = "sem nicho no card Tráfego: é ele que nomeia os conjuntos e orienta a copy." });
     var e = Estrutura.Montar(cli.BudgetMensal.Value, cli.Conta.TemLista, cli.Conta.TemSiteOuTag, cli.TetoMql, cli.NichoSlug, p, DateOnly.FromDateTime(DateTime.Now));
     return Results.Ok(new { ok = true, estrutura = e, vault_sha = p.VaultSha });
 });
@@ -227,7 +255,11 @@ api.MapPost("/clientes/{slug}/trafego", async (string slug, CardTrafegoPedido p,
     var esc = await escopo.DoUsuarioAsync(UserId(c));
     if (!await escopo.AlcancaAsync(esc, slug)) return Results.Json(new { error = "cliente fora do seu escopo" }, statusCode: 403);
     if (!esc.PodeEditarMql) return Results.Json(new { error = Escopo.MotivoSemMql }, statusCode: 403);
-    var r = await escritas.CardTrafegoAsync(esc, slug, p.NichoSlug, p.BudgetMensal);
+    /* campo ausente não mexe; null limpa (o `undefined` do V1) */
+    var (nicho, erroNicho) = Escritas.TextoDoCorpo(p.NichoSlug, "nicho");
+    var (budget, erroBudget) = Escritas.ReaisDoCorpo(p.BudgetMensal, "budget mensal");
+    if ((erroNicho ?? erroBudget) is { } erro) return Results.Json(new { error = erro }, statusCode: 400);
+    var r = await escritas.CardTrafegoAsync(esc, slug, nicho, budget);
     return r.Ok ? Results.Ok(new { ok = true }) : Results.Json(new { error = r.Erro }, statusCode: r.Status);
 });
 
@@ -236,7 +268,10 @@ api.MapPost("/clientes/{slug}/mql", async (string slug, MqlPedido p, HttpContext
     var esc = await escopo.DoUsuarioAsync(UserId(c));
     if (!await escopo.AlcancaAsync(esc, slug)) return Results.Json(new { error = "cliente fora do seu escopo" }, statusCode: 403);
     if (!esc.PodeEditarMql) return Results.Json(new { error = Escopo.MotivoSemMql }, statusCode: 403);
-    var r = await escritas.CriterioMqlAsync(esc, slug, p.Regua, p.TetoMql);
+    var (regua, erroRegua) = Escritas.ReguaDoCorpo(p.Regua);
+    var (teto, erroTeto) = Escritas.ReaisDoCorpo(p.TetoMql, "teto por MQL");
+    if ((erroRegua ?? erroTeto) is { } erro) return Results.Json(new { error = erro }, statusCode: 400);
+    var r = await escritas.CriterioMqlAsync(esc, slug, regua, teto);
     return r.Ok ? Results.Ok(new { ok = true }) : Results.Json(new { error = r.Erro }, statusCode: r.Status);
 });
 
@@ -272,7 +307,9 @@ api.MapPost("/clientes/{slug}/pecas/{id}/ajustar", async (string slug, string id
 api.MapPost("/clientes", async (NovoClientePedido p, HttpContext c, Escopo escopo, Setup setup) =>
 {
     var esc = await escopo.DoUsuarioAsync(UserId(c));
-    if (!esc.PodeAplicarNaMeta) return Results.Json(new { error = "criar cliente é de coordenador pra cima." }, statusCode: 403);
+    /* podeCriarCliente do V1 (cargos-admin.ts): tier <= 2, coordenador e acima; head não cria */
+    if (!BlueOS.Core.Cs.CsRegras.PodeCriarCliente(esc.Papeis))
+        return Results.Json(new { error = "Cadastrar cliente na carteira é só de coordenador e acima. Peça a um coordenador para criar o cliente e te vincular ao squad." }, statusCode: 403);
     var (status, corpo) = await setup.CriarClienteAsync(p.Nome ?? "", p.Squad, Guid.Parse(esc.UserId));
     return Results.Json(corpo, statusCode: status);
 });
@@ -329,7 +366,7 @@ api.MapPost("/squads/{nome}/token", async (string nome, TokenPedido p, HttpConte
     var squad = await setup.SquadAsync(nome);
     if (squad is null) return Results.Json(new { error = $"squad {nome} não existe" }, statusCode: 404);
     if (!esc.Global && (esc.SquadIds is null || !esc.SquadIds.Contains(squad.Value.Id ?? ""))) return Results.Json(new { error = $"o squad {nome} não está no seu escopo." }, statusCode: 403);
-    var (status, corpo) = await setup.GravarTokenAsync(squad.Value.Nome, p.Token ?? "", Guid.Parse(esc.UserId));
+    var (status, corpo) = await setup.GravarTokenAsync(squad.Value.Nome, p.Token ?? "", Guid.Parse(esc.UserId), squad.Value.Id);
     return Results.Json(corpo, statusCode: status);
 });
 
@@ -365,7 +402,7 @@ api.MapPatch("/clientes/{slug}/modo", async (string slug, ModoPedido p, HttpCont
     var esc = await escopo.DoUsuarioAsync(UserId(c));
     if (!await escopo.AlcancaAsync(esc, slug)) return Results.Json(new { error = "cliente fora do seu escopo" }, statusCode: 403);
     if (!esc.PodeAplicarNaMeta) return Results.Json(new { error = "mudar o modo do motor ou a chave geral é de head pra cima." }, statusCode: 403);
-    var r = await escritas.ModoAsync(slug, p.Modo);
+    var r = await escritas.ModoAsync(esc, slug, p.Modo);
     return r.Ok ? Results.Ok(new { ok = true }) : Results.Json(new { error = r.Erro }, statusCode: r.Status);
 });
 
@@ -455,8 +492,9 @@ api.MapPost("/cs/passo", async (PassoPedido p, HttpContext c, Escopo escopo, Cs 
 app.Run();
 
 public sealed record LoginPedido(string Login, string Senha);
-public sealed record CardTrafegoPedido(string? NichoSlug, decimal? BudgetMensal);
-public sealed record MqlPedido(ReguaV2? Regua, decimal? TetoMql);
+/* JsonElement e não string?/decimal?: o campo AUSENTE (Undefined) não mexe, o null limpa, como o `undefined` do V1 */
+public sealed record CardTrafegoPedido(System.Text.Json.JsonElement NichoSlug, System.Text.Json.JsonElement BudgetMensal);
+public sealed record MqlPedido(System.Text.Json.JsonElement Regua, System.Text.Json.JsonElement TetoMql);
 public sealed record ModoPedido(ModoDeExecucao Modo);
 public sealed record ChaveGeralPedido(bool Ligada, string? Motivo);
 public sealed record DecisaoPedido(bool Aceita, string? Motivo);

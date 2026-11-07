@@ -24,4 +24,7 @@
     <None Include="Regras\*.md" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="BlueOS.Tests" />
+  </ItemGroup>
 </Project>

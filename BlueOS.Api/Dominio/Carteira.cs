@@ -33,7 +33,7 @@ public sealed class Carteira(Db db)
                   from (select x.id, y.numero as lote, x.numero, x.funil, x.formato, x.storage_url, x.created_at, x.copy_peca_id::text as copy_peca_id, x.template_id
                         from public.designer_pecas x join public.designer_lotes y on y.id = x.lote_id
                         where y.cliente_id = c.cliente_id and x.storage_url is not null order by x.created_at desc limit {limiteArtes}) p)::text as artes,
-               (select json_agg(json_build_object('lote_id', l.lote_id, 'nome', l.nome, 'briefing', l.briefing, 'modelo', l.modelo, 'criado_em', l.criado_em,
+               (select json_agg(json_build_object('lote_id', l.lote_id, 'numero', l.numero, 'nome', l.nome, 'briefing', l.briefing, 'modelo', l.modelo, 'criado_em', l.criado_em,
                         'tokens_in', l.tokens_in, 'tokens_out', l.tokens_out,
                         'pecas', (select json_agg(json_build_object('peca_id', p.peca_id, 'tipo', i.tipo, 'funil', i.funil, 'ordem', p.ordem, 'headline', p.headline,
                                     'corpo', p.corpo, 'cta', p.cta, 'aprovada', p.aprovada, 'crivo_ok', p.crivo_ok, 'angulo_headline', p.angulo_headline,
@@ -98,7 +98,7 @@ public sealed class Carteira(Db db)
         return c;
     }
 
-    static Cliente Ler(ILinha r)
+    internal static Cliente Ler(ILinha r)
     {
         var c = new Cliente
         {
@@ -156,17 +156,19 @@ public sealed class Carteira(Db db)
                 });
             }
         }
-        /* Os lotes de copy (só no detalhe): do mais antigo ao mais novo na consulta, o número é a posição;
-           na lista do cliente o mais novo vem primeiro, como o desktop já faz ao gerar. */
+        /* Os lotes de copy: do mais antigo ao mais novo na consulta; o número é o `copy_lote.numero` gravado pelo
+           Agente de Copy (o mesmo na lista e no detalhe), e só o lote antigo sem número cai na posição.
+           Na lista do cliente o mais novo vem primeiro, como o desktop já faz ao gerar. */
         var lotes = r.Json("lotes");
         if (!string.IsNullOrWhiteSpace(lotes))
         {
             var n = 0;
             foreach (var l in JsonDocument.Parse(lotes).RootElement.EnumerateArray())
             {
+                n++;
                 var lote = new LoteDeCopy
                 {
-                    Id = Str(l, "lote_id") ?? "", Numero = ++n, Modelo = Str(l, "modelo") ?? "", Briefing = Str(l, "briefing"), NichoSlug = c.NichoSlug,
+                    Id = Str(l, "lote_id") ?? "", Numero = Num(l, "numero") is > 0 and var numero ? (int)numero : n, Modelo = Str(l, "modelo") ?? "", Briefing = Str(l, "briefing"), NichoSlug = c.NichoSlug,
                     CriadoEm = DateTime.TryParse(Str(l, "criado_em"), out var dt) ? dt : DateTime.MinValue, TokensIn = (int)Num(l, "tokens_in"), TokensOut = (int)Num(l, "tokens_out"),
                 };
                 if (l.TryGetProperty("pecas", out var ps) && ps.ValueKind == JsonValueKind.Array)

@@ -17,7 +17,9 @@ namespace BlueOS.Api.Infra;
      É o mesmo caminho que o gate de deploy do V1 usa para ler o banco.
 
    A TRAVA: a API só fala com o projeto cujo ref está em `Supabase:Url`, e
-   recusa o ref de PRODUÇÃO (oaeqvfmvjahmlgdhpsrv) em qualquer transporte.
+   recusa o ref de PRODUÇÃO (oaeqvfmvjahmlgdhpsrv) em qualquer transporte: o
+   Url, e o usuário e o host da connection string do Npgsql, que também têm de
+   nomear o mesmo projeto do Url (`Db.Escolher`, pura e testada).
    Decisão do Igor em 29/10/2026: "contanto que não mexa na produção".
 
    Os valores entram no SQL como literais (a Management API não tem parâmetros):
@@ -79,20 +81,7 @@ public static class Sql
 
 /* ---- Npgsql ------------------------------------------------------------------- */
 
-sealed class LinhaNpgsql(NpgsqlDataReader r) : ILinha
-{
-    object? V(string col) { var i = r.GetOrdinal(col); return r.IsDBNull(i) ? null : r.GetValue(i); }
-    public string? S(string col) => V(col)?.ToString();
-    public decimal? Dec(string col) => V(col) is { } v ? Convert.ToDecimal(v, CultureInfo.InvariantCulture) : null;
-    public long L(string col) => V(col) is { } v ? Convert.ToInt64(v, CultureInfo.InvariantCulture) : 0;
-    public bool? B(string col) => V(col) is bool b ? b : null;
-    public DateTime? Dt(string col) => V(col) is DateTime d ? (d.Kind == DateTimeKind.Utc ? d.ToLocalTime() : d) : null;
-    public DateOnly? Data(string col) => V(col) switch { DateOnly d => d, DateTime dt => DateOnly.FromDateTime(dt), string s when DateOnly.TryParse(s, out var p) => p, _ => null };
-    public List<string> Textos(string col) => V(col) is string[] arr ? arr.Where(x => !string.IsNullOrWhiteSpace(x)).ToList() : new();
-    public string? Json(string col) => V(col)?.ToString();
-}
-
-public sealed class BancoNpgsql : IBanco
+public sealed class BancoNpgsql : IBanco, IDisposable
 {
     readonly NpgsqlDataSource _fonte;
     public string Nome => "Npgsql (pooler do Supabase)";
@@ -102,6 +91,7 @@ public sealed class BancoNpgsql : IBanco
         b.EnableDynamicJson();
         _fonte = b.Build();
     }
+    public void Dispose() => _fonte.Dispose();
     public async Task<List<ILinha>> ConsultarAsync(string sql)
     {
         await using var cx = await _fonte.OpenConnectionAsync();
@@ -238,9 +228,14 @@ public sealed class BancoManagement : IBanco
 
 /* ---- a fachada ------------------------------------------------------------------ */
 
+/// <summary>O que a configuração decide: o erro (a trava ou o que falta) ou o transporte, com a assinatura que diz
+/// quando recriar o cliente. A assinatura leva o HASH da connection string e do token, nunca o segredo.</summary>
+public sealed record EscolhaDoBanco(string? Erro, bool PeloNpgsql, string Assinatura);
+
 public sealed class Db(IConfiguration cfg, IHttpClientFactory fabrica)
 {
     public const string RefProducao = "oaeqvfmvjahmlgdhpsrv";
+    public const string MotivoProducao = "esta API não fala com a PRODUÇÃO (ref oaeqvfmvjahmlgdhpsrv): aponte Supabase:Url e ConnectionStrings:BlueOS para a homologação.";
     readonly object _trava = new();
     IBanco? _banco;
     string? _assinatura;
@@ -254,25 +249,73 @@ public sealed class Db(IConfiguration cfg, IHttpClientFactory fabrica)
         return host.Split('.')[0];
     }
 
+    static bool EhProducao(string? texto) => (texto ?? "").Contains(RefProducao, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>Os refs que a connection string nomeia: o do usuário do pooler (postgres.REF) e o do host direto (db.REF.supabase.co).</summary>
+    public static IReadOnlyList<string> RefsDaConnectionString(NpgsqlConnectionStringBuilder b)
+    {
+        var refs = new List<string>();
+        var usuario = (b.Username ?? "").Trim();
+        var ponto = usuario.IndexOf('.');
+        if (ponto > 0 && ponto < usuario.Length - 1) refs.Add(usuario[(ponto + 1)..]);
+        foreach (var h in (b.Host ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            var rotulos = h.Split(':')[0].Split('.');
+            if (rotulos.Length >= 3 && rotulos[0].Equals("db", StringComparison.OrdinalIgnoreCase) && rotulos[^2].Equals("supabase", StringComparison.OrdinalIgnoreCase))
+                refs.Add(rotulos[1]);
+        }
+        return refs;
+    }
+
+    /// <summary>A TRAVA e o transporte, numa decisão PURA (o que os testes travam). Recusa a produção em QUALQUER
+    /// transporte: pelo ref de Supabase:Url e pelo usuário e host da connection string, que também têm de ser do
+    /// mesmo projeto do Url. A senha é lida pelo NpgsqlConnectionStringBuilder (Password, password, Pwd...).</summary>
+    public static EscolhaDoBanco Escolher(string? url, string? cs, string? token)
+    {
+        var refUrl = RefDe(url ?? "");
+        if (EhProducao(refUrl)) return new(MotivoProducao, false, "");
+        cs ??= ""; token ??= "";
+        var senha = "";
+        if (cs.Trim() != "")
+        {
+            NpgsqlConnectionStringBuilder b;
+            try { b = new NpgsqlConnectionStringBuilder(cs); }
+            catch (Exception e) { return new($"ConnectionStrings:BlueOS não é uma connection string válida: {e.Message}", false, ""); }
+            if (EhProducao(b.Host) || EhProducao(b.Username)) return new(MotivoProducao, false, "");
+            foreach (var r in RefsDaConnectionString(b))
+            {
+                if (EhProducao(r)) return new(MotivoProducao, false, "");
+                if (!string.Equals(r, refUrl, StringComparison.OrdinalIgnoreCase))
+                    return new($"ConnectionStrings:BlueOS aponta para o projeto {r}, e Supabase:Url para {refUrl}: os dois têm de ser o mesmo projeto (a homologação).", false, "");
+            }
+            senha = (b.Password ?? "").Trim();
+        }
+        var senhaOk = senha.Length > 0 && senha != "SENHA_DO_BANCO" && senha != "[YOUR-PASSWORD]";
+        if (senhaOk) return new(null, true, "npgsql:" + Impressao(cs));
+        if (token.Trim() != "") return new(null, false, "mgmt:" + refUrl + ":" + Impressao(token));
+        return new("falta a senha em ConnectionStrings:BlueOS ou o Supabase:AccessToken (appsettings.Local.json)", false, "");
+    }
+
+    static string Impressao(string v) => Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(v)))[..16];
+
     public string Transporte => Resolver().Banco?.Nome ?? "nenhum";
 
     (IBanco? Banco, string? Erro) Resolver()
     {
-        if (string.Equals(Ref, RefProducao, StringComparison.OrdinalIgnoreCase))
-            return (null, "esta API não fala com a PRODUÇÃO (ref oaeqvfmvjahmlgdhpsrv): aponte Supabase:Url para a homologação.");
         var cs = cfg.GetConnectionString("BlueOS") ?? "";
-        var senhaOk = cs.Contains("Password=", StringComparison.OrdinalIgnoreCase)
-            && cs.Split("Password=", 2, StringSplitOptions.None)[1].Split(';')[0].Trim() is { Length: > 0 } s && s != "SENHA_DO_BANCO" && s != "[YOUR-PASSWORD]";
         var token = cfg["Supabase:AccessToken"] ?? "";
-        var assinatura = senhaOk ? "npgsql:" + cs : token != "" ? "mgmt:" + Ref + ":" + token.Length : "";
-        if (assinatura == "") return (null, "falta a senha em ConnectionStrings:BlueOS ou o Supabase:AccessToken (appsettings.Local.json)");
+        var escolha = Escolher(cfg["Supabase:Url"], cs, token);
+        if (escolha.Erro is not null) return (null, escolha.Erro);
         lock (_trava)
         {
-            if (_banco is not null && _assinatura == assinatura) return (_banco, null);
+            if (_banco is not null && _assinatura == escolha.Assinatura) return (_banco, null);
             try
             {
-                _banco = senhaOk ? new BancoNpgsql(cs) : new BancoManagement(fabrica.CreateClient("supabase-mgmt"), Ref, token);
-                _assinatura = assinatura;
+                var anterior = _banco;
+                _banco = escolha.PeloNpgsql ? new BancoNpgsql(cs) : new BancoManagement(fabrica.CreateClient("supabase-mgmt"), Ref, token);
+                _assinatura = escolha.Assinatura;
+                /* o pool do transporte trocado não fica vivo (a troca só acontece quando a configuração muda) */
+                (anterior as IDisposable)?.Dispose();
                 return (_banco, null);
             }
             catch (Exception e) { return (null, $"banco não configurado: {e.Message}"); }

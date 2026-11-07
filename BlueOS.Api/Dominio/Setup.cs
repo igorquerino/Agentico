@@ -15,11 +15,12 @@ namespace BlueOS.Api.Dominio;
      {cliente_id}/{tipo}/{nome}, e a linha em `cliente_asset` (upsert por
      cliente, tipo e nome); a prévia é uma URL assinada por 1 h;
    · CONTA: `trafego_contas` (upsert por slug), sem chamada à Meta, como o V1;
+     o `squad_nome` é o squad PRINCIPAL vigente do cliente (ou null);
    · TOKEN DO SQUAD: conferido na Meta (/me e /me/permissions, com o escopo do
-     MCP) antes de gravar em `trafego_integracoes`; a trilha guarda só o fim
-     mascarado;
-   · CRIAR CLIENTE: slug, duplicidade, `clientes` e o vínculo principal em
-     `cliente_squads`; coordenador pra cima.
+     MCP) antes de gravar em `trafego_integracoes`; a trilha (aba 'setup',
+     `trocou_token`, como o V1) guarda só o token mascarado e um hash curto;
+   · CRIAR CLIENTE: slug, duplicidade, squad que existe, `clientes` e o vínculo
+     principal em `cliente_squads`; coordenador pra cima (tier <= 2).
    ============================================================================ */
 public sealed class Setup(Db db, SupabaseStorage storage, MetaGraph graph, Registro registro, ILogger<Setup> log)
 {
@@ -35,7 +36,8 @@ public sealed class Setup(Db db, SupabaseStorage storage, MetaGraph graph, Regis
         var sb = new StringBuilder();
         foreach (var ch in limpo) if (System.Globalization.CharUnicodeInfo.GetUnicodeCategory(ch) != System.Globalization.UnicodeCategory.NonSpacingMark) sb.Append(ch);
         var seguro = Regex.Replace(sb.ToString().ToLowerInvariant(), @"[^a-z0-9._-]+", "-").Trim('-');
-        if (seguro == "" || seguro == ".") seguro = "arquivo";
+        /* nome só de pontos ("", ".", "..") viraria um segmento de caminho que a Uri colapsa */
+        if (seguro.Trim('.') == "") seguro = "arquivo";
         return $"{clienteId}/{tipo}/{seguro}";
     }
 
@@ -97,15 +99,22 @@ public sealed class Setup(Db db, SupabaseStorage storage, MetaGraph graph, Regis
             if (act.StartsWith("act_", StringComparison.OrdinalIgnoreCase)) act = act[4..];
             if (!Regex.IsMatch(act, @"^\d{6,20}$")) return (400, new { error = "a conta de anúncio é o número do act_ (6 a 20 dígitos)." });
         }
-        var squad = (c.Squad ?? "").Trim().ToUpperInvariant();
         var page = string.IsNullOrWhiteSpace(pageId) ? null : pageId.Trim();
-        await db.ExecutarAsync(Sql.Fmt($"""
+        /* squad_nome escolhe o token, a rota MCP e a liberação da escrita: é o squad PRINCIPAL vigente do cliente, ou
+           null (como o V1), nunca o primeiro squad visível a quem clicou nem "sem squad" */
+        var linha = (await db.ListaAsync(Sql.Fmt($"""
+            with antes as (select ad_account_id from public.trafego_contas where cliente_slug = {c.Slug})
             insert into public.trafego_contas (cliente_slug, ad_account_id, page_id, squad_nome, atualizado_em, atualizado_por, origem)
-            values ({c.Slug}, {act}, {page}, {squad}, now(), {por}, 'api')
+            values ({c.Slug}, {act}, {page}, {new Raw(Escritas.SquadPrincipalSql(c.Slug))}, now(), {por}, 'api')
             on conflict (cliente_slug) do update set ad_account_id = excluded.ad_account_id, page_id = coalesce(excluded.page_id, public.trafego_contas.page_id),
-              squad_nome = coalesce(nullif(excluded.squad_nome, ''), public.trafego_contas.squad_nome), atualizado_em = now(), atualizado_por = excluded.atualizado_por, origem = 'api'
-            """));
-        await registro.TrilhaAsync(desconectar ? "desconectou_conta" : "conectou_conta", por, c.Slug, "ok", null, "conta", act, new { via = "api", page_id = page, page_nome = pageNome, squad });
+              squad_nome = excluded.squad_nome, atualizado_em = now(), atualizado_por = excluded.atualizado_por, origem = 'api'
+            returning squad_nome, (select a.ad_account_id from antes a limit 1) as antes
+            """), r => new { Squad = r.S("squad_nome"), Antes = r.S("antes") })).FirstOrDefault();
+        var squad = linha?.Squad;
+        var antes = linha?.Antes;
+        var evento = desconectar ? "desconectou_conta" : !string.IsNullOrEmpty(antes) && antes != act ? "trocou_conta" : "conectou_conta";
+        await TrilhaDoSetup.GravarAsync(db, log, evento, por, c.Slug, alvoTipo: "conta", alvoId: desconectar ? antes : act, alvoNome: c.Nome,
+            antes: new { ad_account_id = antes }, depois: new { ad_account_id = act }, detalhe: new { via = "api", page_id = page, page_nome = pageNome }, squadId: squad);
         return (200, new { ok = true, ad_account_id = act, page_id = page });
     }
 
@@ -145,19 +154,43 @@ public sealed class Setup(Db db, SupabaseStorage storage, MetaGraph graph, Regis
         catch (Exception e) { return (false, $"não consegui conferir na Meta: {MetaGraph.Sanear(e.Message)}", false); }
     }
 
-    public async Task<(int Status, object Corpo)> GravarTokenAsync(string squadNome, string token, Guid por)
+    /// <summary>mascarar do V1 (lib/trafego/trilha.ts): o começo e o fim, para reconhecer o token sem guardá-lo.</summary>
+    public static string Mascarar(string? v)
+    {
+        var s = v ?? "";
+        if (s == "") return "";
+        return s.Length <= 12 ? "••••" : $"{s[..4]}••••{s[^6..]}";
+    }
+
+    /// <summary>impressao do V1: hash curto para provar que o token mudou sem guardar nenhum dos dois.</summary>
+    public static string Impressao(string? v) =>
+        string.IsNullOrEmpty(v) ? "" : Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(v))).ToLowerInvariant()[..12];
+
+    public async Task<(int Status, object Corpo)> GravarTokenAsync(string squadNome, string token, Guid por, string? squadId = null)
     {
         token = (token ?? "").Trim();
         if (token.Length < 40) return (400, new { error = "o token é curto demais: cole o token inteiro." });
-        var (valido, motivo, mcp) = await ConferirNaMetaAsync(token);
-        if (!valido) return (422, new { error = motivo ?? "a Meta recusou o token" });
         var nome = squadNome.Trim().ToUpperInvariant();
+        var (valido, motivo, mcp) = await ConferirNaMetaAsync(token);
+        if (!valido)
+        {
+            await TrilhaDoSetup.GravarAsync(db, log, "trocou_token", por, null, "erro", $"a Meta recusou o token: {motivo ?? "sem detalhe"}", "squad", squadId ?? nome, nome,
+                depois: new { token = Mascarar(token), token_hash = Impressao(token) }, detalhe: new { via = "api" }, squadId: squadId ?? nome);
+            return (422, new { error = motivo ?? "a Meta recusou o token" });
+        }
+        /* o que havia antes, para a trilha dizer "trocou" e não só "salvou" (token-meta/route.ts do V1) */
+        var antigo = "";
+        try { antigo = (await db.UmAsync(Sql.Fmt($"select meta_access_token as t from public.trafego_integracoes where upper(trim(squad_nome)) = {nome}"), r => new { T = r.S("t") }))?.T ?? ""; }
+        catch { /* sem o antigo a trilha ainda registra o novo */ }
         await db.ExecutarAsync(Sql.Fmt($"""
             insert into public.trafego_integracoes (squad_nome, meta_access_token, atualizado_em, atualizado_por, origem) values ({nome}, {token}, now(), {por}, 'setup')
             on conflict (squad_nome) do update set meta_access_token = excluded.meta_access_token, atualizado_em = now(), atualizado_por = excluded.atualizado_por, origem = 'setup'
             """));
         MetaEscrita.EsquecerCredenciais();
-        await registro.TrilhaAsync("gravou_token_squad", por, null, "ok", null, "squad", nome, new { via = "api", token_fim = token[^6..], tamanho = token.Length, mcp });
+        await TrilhaDoSetup.GravarAsync(db, log, "trocou_token", por, null, "ok", null, "squad", squadId ?? nome, nome,
+            antes: new { token = Mascarar(antigo), token_hash = Impressao(antigo) },
+            depois: new { token = Mascarar(token), token_hash = Impressao(token) },
+            detalhe: new { via = "api", mudou = Impressao(antigo) != Impressao(token), mcp }, squadId: squadId ?? nome);
         return (200, new { ok = true, squad = nome, valido = true, mcp });
     }
 
@@ -179,9 +212,13 @@ public sealed class Setup(Db db, SupabaseStorage storage, MetaGraph graph, Regis
         if (slug == "") return (400, new { error = "o nome não gera um slug válido." });
         var existe = await db.UmAsync(Sql.Fmt($"select cliente_slug, cliente_status_atual::text as st from public.clientes where cliente_slug = {slug} or lower(cliente_nome) = {nome.ToLowerInvariant()} limit 1"), r => new { Slug = r.S("cliente_slug"), St = r.S("st") });
         if (existe is not null) return (409, new { error = $"já existe um cliente com esse nome ou slug ({existe.Slug}, {existe.St}).", slug = existe.Slug });
+        /* o squad informado tem de existir ANTES do insert: senão o cliente nasce órfão, some da carteira de quem
+           criou e o reenvio dá 409 */
+        var squad = string.IsNullOrWhiteSpace(squadNome) ? null : await SquadAsync(squadNome);
+        if (!string.IsNullOrWhiteSpace(squadNome) && squad is not { Id: not null })
+            return (400, new { error = $"o squad {squadNome.Trim()} não existe (ou está arquivado): confira o nome antes de criar o cliente." });
         var id = (await db.ListaAsync(Sql.Fmt($"insert into public.clientes (cliente_nome, cliente_slug, cliente_status_atual) values ({nome}, {slug}, 'ativo'::status_cliente) returning cliente_id::text as id"), r => r.S("id"))).FirstOrDefault()
             ?? throw new InvalidOperationException("o cliente não gravou.");
-        var squad = string.IsNullOrWhiteSpace(squadNome) ? null : await SquadAsync(squadNome);
         if (squad is { Id: not null })
             await db.ExecutarAsync(Sql.Fmt($"insert into public.cliente_squads (cliente_id, squad_id, cliente_squad_tipo, cliente_squad_desde) values ({Guid.Parse(id)}, {Guid.Parse(squad.Value.Id!)}, 'principal'::tipo_vinculo_squad, current_date)"));
         await registro.TrilhaAsync("criou_cliente", por, slug, "ok", null, "cliente", id, new { via = "api", nome, squad = squad?.Nome });

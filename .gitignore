@@ -12,3 +12,6 @@ obj/
 
 # Segredos locais da API (connection string, chaves): nunca no repositório
 BlueOS.Api/appsettings.Local.json
+
+# Relatório do sync da homologação (scripts/sync_prod_para_stag.py): chaves e erros, nunca no repositório
+sync_relatorio.json
